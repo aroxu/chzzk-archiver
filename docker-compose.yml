@@ -1,0 +1,16 @@
+services:
+  archiver:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    ports:
+      - "8000:8000"
+    environment:
+      ARCHIVER_SECRET_KEY: ${ARCHIVER_SECRET_KEY:?set ARCHIVER_SECRET_KEY in .env}
+      ARCHIVER_COOKIE_ENCRYPTION_KEY: ${ARCHIVER_COOKIE_ENCRYPTION_KEY:-}
+      ARCHIVER_SECURE_COOKIES: ${ARCHIVER_SECURE_COOKIES:-false}
+    volumes:
+      - ./data:/data
+      - ./recordings:/recordings
+    restart: unless-stopped
+
