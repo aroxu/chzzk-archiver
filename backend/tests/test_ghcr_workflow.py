@@ -30,3 +30,9 @@ def test_compose_can_pull_published_images_without_building():
     compose = (ROOT / "docker-compose.yml").read_text(encoding="utf-8")
     assert "ghcr.io/aroxu/chzzk-archiver:latest" in compose
     assert "ghcr.io/aroxu/chzzk-archiver-worker:latest" in compose
+
+
+def test_frontend_build_runs_once_on_the_native_build_platform():
+    dockerfile = (ROOT / "backend" / "Dockerfile").read_text(encoding="utf-8")
+    assert "FROM --platform=$BUILDPLATFORM node:" in dockerfile
+    assert "pnpm install --frozen-lockfile" in dockerfile
