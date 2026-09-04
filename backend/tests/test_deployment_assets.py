@@ -147,3 +147,17 @@ def test_gitattributes_pins_line_endings():
     assert "*.sh text eol=lf" in attributes
     assert "*.service text eol=lf" in attributes
     assert "*.ps1 text eol=crlf" in attributes
+
+
+def test_windows_builder_installs_runtime_dependencies_in_an_isolated_venv():
+    builder = (SCRIPTS / "build-worker.ps1").read_text(encoding="utf-8")
+    assert "-m venv $buildVenvPath" in builder
+    assert "uv pip install --python $buildPython $workspace pyinstaller" in builder
+    assert builder.index("uv pip install") < builder.index("-m PyInstaller")
+    assert "archiver-worker.exe\") --doctor" in builder
+
+
+def test_linux_builder_installs_project_before_pyinstaller_runs():
+    builder = (SCRIPTS / "build-worker.sh").read_text(encoding="utf-8")
+    assert 'install --quiet . pyinstaller' in builder
+    assert builder.index('install --quiet . pyinstaller') < builder.index('"$venv/bin/pyinstaller"')

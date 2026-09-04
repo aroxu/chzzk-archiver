@@ -14,5 +14,6 @@ web/*.tsbuildinfo
 extension/dist/
 build/
 dist/
+.build-venv*/
 *.spec
 example_ignore/
