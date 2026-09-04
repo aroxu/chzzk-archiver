@@ -1,0 +1,36 @@
+[Unit]
+Description=CHZZK Archive encoder worker
+Documentation=https://github.com/aroxu/chzzk-archiver
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=__WORKER_USER__
+Group=__WORKER_USER__
+ExecStart=__WORKER_BIN__
+# Credentials live in a root-owned file so the token stays out of the process
+# list and out of this unit.
+EnvironmentFile=__WORKER_ENV__
+Restart=always
+RestartSec=10s
+TimeoutStopSec=30s
+KillSignal=SIGINT
+
+# The worker only needs to read its binary, run ffmpeg and reach the network.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectControlGroups=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+# GPU encoding needs /dev/dri; harmless when only libx265 is available.
+DeviceAllow=/dev/dri rw
+SupplementaryGroups=video render
+
+[Install]
+WantedBy=multi-user.target
+

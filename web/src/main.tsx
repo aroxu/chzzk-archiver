@@ -54,6 +54,20 @@ type Recording = {
   created_at: string;
   error?: string;
 };
+
+const IN_FLIGHT_STATES = new Set(["queued", "recording", "processing"]);
+
+/** Whether a query payload still contains work that needs live updates. */
+function hasActiveWork(data: unknown): boolean {
+  if (!Array.isArray(data)) return false;
+  return data.some(
+    (item) =>
+      item &&
+      typeof item === "object" &&
+      (IN_FLIGHT_STATES.has((item as Recording).state) ||
+        (item as Subscription).live === true),
+  );
+}
 type Subscription = {
   id: number;
   channel_id: string;
@@ -61,6 +75,15 @@ type Subscription = {
   image?: string;
   live: boolean;
   auto_record: boolean;
+};
+type SubscribeResult = {
+  id: number;
+  channel_id: string;
+  name: string;
+  image?: string;
+  auto_record: boolean;
+  live: boolean;
+  live_title?: string | null;
 };
 
 async function api<T>(path: string, init?: RequestInit): Promise<T> {
@@ -84,7 +107,9 @@ const size = (n: number) => {
 const typeLabel = (type: Recording["type"]) =>
   type === "vod" ? "VIDEO" : type.toUpperCase();
 const stateLabel = (r: Recording) =>
-  r.state === "recording" || r.state === "queued"
+  r.state === "processing"
+    ? "ENCODING"
+    : r.state === "recording" || r.state === "queued"
     ? r.type === "live"
       ? "RECORDING"
       : "DOWNLOADING"
@@ -161,6 +186,13 @@ function Auth({ setup }: { setup: boolean }) {
               ? "초대로 가입하기"
               : "아카이브에 로그인"}
         </h2>
+        <p className="hint">
+          {setup
+            ? "이 계정이 서버의 첫 관리자가 됩니다."
+            : register
+              ? "받은 초대 코드로 계정을 만드세요."
+              : "구독한 채널과 저장한 영상을 이어서 봅니다."}
+        </p>
         <label>
           사용자 이름
           <input
@@ -176,7 +208,6 @@ function Auth({ setup }: { setup: boolean }) {
             value={password}
             onChange={(e) => setPassword(e.target.value)}
             required
-            minLength={6}
           />
         </label>
         {register && (
@@ -197,7 +228,10 @@ function Auth({ setup }: { setup: boolean }) {
           <button
             type="button"
             className="link"
-            onClick={() => setRegister(!register)}
+            onClick={() => {
+              setRegister(!register);
+              setError("");
+            }}
           >
             {register ? "이미 계정이 있어요" : "초대 코드를 받았어요"}
           </button>
@@ -388,22 +422,43 @@ function Channels() {
   const qc = useQueryClient();
   const [channel, setChannel] = useState("");
   const [error, setError] = useState("");
+  const [notice, setNotice] = useState("");
   const { data = [] } = useQuery({
     queryKey: ["subs"],
     queryFn: () => api<Subscription[]>("/api/subscriptions"),
   });
   const add = useMutation({
     mutationFn: () =>
-      api("/api/subscriptions", {
+      api<SubscribeResult>("/api/subscriptions", {
         method: "POST",
         body: JSON.stringify({ channel, auto_record: true }),
       }),
-    onSuccess: () => {
+    onSuccess: async (result) => {
+      const requested = channel;
       setChannel("");
       setError("");
+      setNotice("");
       qc.invalidateQueries({ queryKey: ["subs"] });
+      if (!result?.live) return;
+      const label = result.live_title
+        ? `"${result.live_title}"`
+        : `${result.name} 채널`;
+      if (!confirm(`${label} 방송이 진행 중입니다. 지금부터 바로 녹화할까요?`)) return;
+      try {
+        await api("/api/subscriptions/start-live", {
+          method: "POST",
+          body: JSON.stringify({ channel: result.channel_id || requested }),
+        });
+        setNotice(`${result.name} 라이브 녹화를 시작했습니다.`);
+        qc.invalidateQueries({ queryKey: ["recordings"] });
+      } catch (e) {
+        setError((e as Error).message);
+      }
     },
-    onError: (e) => setError(e.message),
+    onError: (e) => {
+      setNotice("");
+      setError(e.message);
+    },
   });
   return (
     <>
@@ -428,6 +483,7 @@ function Channels() {
         </button>
       </form>
       {error && <p className="error">{error}</p>}
+      {notice && <p className="notice">{notice}</p>}
       <div className="channel-list">
         {data.map((ch) => (
           <article key={ch.id}>
@@ -473,7 +529,6 @@ function Library({ onPlay }: { onPlay: (recording: Recording) => void }) {
   const { data = [] } = useQuery({
     queryKey: ["recordings"],
     queryFn: () => api<Recording[]>("/api/recordings"),
-    refetchInterval: 1000,
   });
   const download = useMutation({
     mutationFn: () =>
@@ -537,7 +592,7 @@ const mediaTime = (seconds: number) => {
     : `${minutes}:${String(rest).padStart(2, "0")}`;
 };
 
-function ArchivePlayer({ recording }: { recording: Recording }) {
+function ArchivePlayer({ recording, onAspectRatio }: { recording: Recording; onAspectRatio?: (ratio: number) => void }) {
   const frame = useRef<HTMLDivElement>(null);
   const video = useRef<HTMLVideoElement>(null);
   const [playing, setPlaying] = useState(false);
@@ -585,6 +640,10 @@ function ArchivePlayer({ recording }: { recording: Recording }) {
         onPause={() => setPlaying(false)}
         onTimeUpdate={(event) => setCurrent(event.currentTarget.currentTime)}
         onDurationChange={(event) => setDuration(event.currentTarget.duration)}
+        onLoadedMetadata={(event) => {
+          const { videoWidth, videoHeight } = event.currentTarget;
+          if (videoWidth > 0 && videoHeight > 0) onAspectRatio?.(videoWidth / videoHeight);
+        }}
         onLoadStart={() => setWaiting(true)}
         onCanPlay={() => setWaiting(false)}
         onWaiting={() => setWaiting(true)}
@@ -626,11 +685,21 @@ function ArchivePlayer({ recording }: { recording: Recording }) {
 
 function PlayerModal({ recording, onClose }: { recording: Recording; onClose: () => void }) {
   const dialog = useRef<HTMLElement>(null);
+  const resizing = useRef(false);
+  const [aspectRatio, setAspectRatio] = useState(16 / 9);
   const initialSize = () => ({
     width: Math.min(1000, window.innerWidth - 24),
     height: Math.min(720, window.innerHeight - 24),
   });
   const [dialogSize, setDialogSize] = useState(initialSize);
+
+  const layoutSize = (element: HTMLElement) => {
+    const styles = window.getComputedStyle(element);
+    return {
+      width: Number.parseFloat(styles.width),
+      height: Number.parseFloat(styles.height),
+    };
+  };
 
   useEffect(() => {
     const clamp = () => setDialogSize((current) => ({
@@ -648,31 +717,118 @@ function PlayerModal({ recording, onClose }: { recording: Recording; onClose: ()
     };
   }, [onClose]);
 
+  const fitDialogToVideo = (requestedPlayerWidth: number, ratio: number, chromeWidth: number, chromeHeight: number) => {
+    const maxDialogWidth = Math.max(280, window.innerWidth - 24);
+    const maxDialogHeight = Math.max(240, window.innerHeight - 24);
+    const minDialogWidth = Math.min(360, maxDialogWidth);
+    const minDialogHeight = Math.min(300, maxDialogHeight);
+    const maxPlayerWidth = Math.max(1, Math.min(
+      maxDialogWidth - chromeWidth,
+      (maxDialogHeight - chromeHeight) * ratio,
+    ));
+    const minPlayerWidth = Math.min(maxPlayerWidth, Math.max(
+      1,
+      minDialogWidth - chromeWidth,
+      (minDialogHeight - chromeHeight) * ratio,
+    ));
+    const playerWidth = Math.min(maxPlayerWidth, Math.max(minPlayerWidth, requestedPlayerWidth));
+    return {
+      width: playerWidth + chromeWidth,
+      height: playerWidth / ratio + chromeHeight,
+    };
+  };
+
+  useEffect(() => {
+    let frame = 0;
+    const applyRatio = () => {
+      frame = 0;
+      if (resizing.current) return;
+      const dialogElement = dialog.current;
+      const playerElement = dialogElement?.querySelector<HTMLElement>(".archive-player");
+      if (!dialogElement || !playerElement) return;
+      const bounds = layoutSize(dialogElement);
+      const playerBounds = layoutSize(playerElement);
+      const next = fitDialogToVideo(
+        playerBounds.width,
+        aspectRatio,
+        bounds.width - playerBounds.width,
+        bounds.height - playerBounds.height,
+      );
+      setDialogSize((current) => (
+        Math.abs(current.width - next.width) < 0.01 && Math.abs(current.height - next.height) < 0.01
+          ? current
+          : next
+      ));
+    };
+    const scheduleRatio = () => {
+      if (frame) cancelAnimationFrame(frame);
+      frame = requestAnimationFrame(applyRatio);
+    };
+    const dialogElement = dialog.current;
+    const playerElement = dialogElement?.querySelector<HTMLElement>(".archive-player");
+    if (!dialogElement || !playerElement) return;
+    const observer = new ResizeObserver(scheduleRatio);
+    observer.observe(dialogElement);
+    observer.observe(playerElement);
+    scheduleRatio();
+    return () => {
+      observer.disconnect();
+      if (frame) cancelAnimationFrame(frame);
+    };
+  }, [aspectRatio]);
+
+  const enforceAspectRatio = (ratio: number) => {
+    if (!Number.isFinite(ratio) || ratio <= 0) return;
+    setAspectRatio(ratio);
+  };
+
   const startResize = (event: React.PointerEvent<HTMLButtonElement>) => {
     event.preventDefault();
-    const bounds = dialog.current?.getBoundingClientRect();
-    if (!bounds) return;
-    const origin = { x: event.clientX, y: event.clientY, width: bounds.width, height: bounds.height };
+    event.stopPropagation();
+    const dialogElement = dialog.current;
+    const playerElement = dialogElement?.querySelector<HTMLElement>(".archive-player");
+    if (!dialogElement || !playerElement) return;
+    const bounds = layoutSize(dialogElement);
+    const playerBounds = layoutSize(playerElement);
+    resizing.current = true;
+    event.currentTarget.setPointerCapture(event.pointerId);
+    const origin = {
+      x: event.clientX,
+      y: event.clientY,
+      playerWidth: playerBounds.width,
+      chromeWidth: bounds.width - playerBounds.width,
+      chromeHeight: bounds.height - playerBounds.height,
+    };
     const move = (pointer: PointerEvent) => {
-      const maxWidth = Math.max(280, window.innerWidth - 24);
-      const maxHeight = Math.max(240, window.innerHeight - 24);
-      setDialogSize({
-        width: Math.min(maxWidth, Math.max(Math.min(360, maxWidth), origin.width + pointer.clientX - origin.x)),
-        height: Math.min(maxHeight, Math.max(Math.min(300, maxHeight), origin.height + pointer.clientY - origin.y)),
-      });
+      const horizontalDelta = pointer.clientX - origin.x;
+      const verticalDelta = (pointer.clientY - origin.y) * aspectRatio;
+      const dominantDelta = Math.abs(horizontalDelta) >= Math.abs(verticalDelta) ? horizontalDelta : verticalDelta;
+      setDialogSize(fitDialogToVideo(
+        origin.playerWidth + dominantDelta,
+        aspectRatio,
+        origin.chromeWidth,
+        origin.chromeHeight,
+      ));
     };
     const stop = () => {
+      resizing.current = false;
       window.removeEventListener("pointermove", move);
       window.removeEventListener("pointerup", stop);
+      window.removeEventListener("pointercancel", stop);
       document.body.classList.remove("resizing-player");
     };
     document.body.classList.add("resizing-player");
     window.addEventListener("pointermove", move);
     window.addEventListener("pointerup", stop, { once: true });
+    window.addEventListener("pointercancel", stop, { once: true });
+  };
+
+  const closeFromBackdrop = (event: React.PointerEvent<HTMLDivElement>) => {
+    if (event.target === event.currentTarget && !resizing.current) onClose();
   };
 
   return (
-    <motion.div className="player-overlay" onClick={onClose} initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
+    <motion.div className="player-overlay" onPointerDown={closeFromBackdrop} initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
       <motion.section
         ref={dialog}
         className="player-dialog"
@@ -687,7 +843,7 @@ function PlayerModal({ recording, onClose }: { recording: Recording; onClose: ()
           <div><small>{recording.channel} · {typeLabel(recording.type)}</small><strong>{recording.title}</strong></div>
           <button onClick={onClose} aria-label="플레이어 닫기">✕</button>
         </div>
-        <div className="player-dialog-media"><ArchivePlayer recording={recording} /></div>
+        <div className="player-dialog-media"><ArchivePlayer recording={recording} onAspectRatio={enforceAspectRatio} /></div>
         <div className="player-dialog-foot">{new Date(recording.created_at).toLocaleString("ko-KR")} · {size(recording.size)}</div>
         <button className="player-resize" onPointerDown={startResize} aria-label="플레이어 크기 조절" title="드래그하여 크기 조절" />
       </motion.section>
@@ -746,9 +902,9 @@ function RecordingGrid({ recordings, onPlay }: { recordings: Recording[]; onPlay
           <div className="recording-meta">
             <small>{r.channel}</small>
             <h3>{r.title}</h3>
-            {(r.state === "recording" || r.state === "queued") && (
+            {(r.state === "recording" || r.state === "queued" || r.state === "processing") && (
               <div className={`download-progress ${r.type === "live" ? "live-recording-progress" : ""}`}>
-                {r.type === "live" && (
+                {r.type === "live" && r.state !== "processing" && (
                   <div className="live-recording-status">
                     <div>
                       <span className={r.recording_active && r.speed_bps > 0 ? "healthy" : "connecting"}>
@@ -760,6 +916,7 @@ function RecordingGrid({ recordings, onPlay }: { recordings: Recording[]; onPlay
                               ? "스트림 연결 중"
                               : "프로세스 확인 중"}
                       </span>
+                      <em aria-hidden="true">|</em>
                       <strong>{mediaTime(r.recorded_seconds || 0)}</strong>
                     </div>
                     <div>
@@ -770,7 +927,9 @@ function RecordingGrid({ recordings, onPlay }: { recordings: Recording[]; onPlay
                 )}
                 <div>
                   <span>
-                    {r.progress != null
+                    {r.state === "processing"
+                      ? "HEVC 인코딩 중"
+                      : r.progress != null
                       ? `${r.progress.toFixed(1)}%`
                       : "연결 중"}
                   </span>
@@ -791,9 +950,9 @@ function RecordingGrid({ recordings, onPlay }: { recordings: Recording[]; onPlay
             </p>
             {r.error && <p className="error">{r.error}</p>}
             <div className="recording-actions">
-              {(r.state === "recording" || r.state === "queued") && (
+              {(r.state === "recording" || r.state === "queued" || r.state === "processing") && (
                 <button className="cancel" onClick={() => cancel(r)}>
-                  {r.type === "live" ? "녹화 중단" : "다운로드 취소"}
+                  {r.state === "processing" ? "인코딩 취소" : r.type === "live" ? "녹화 중단" : "다운로드 취소"}
                 </button>
               )}
               <button
@@ -923,7 +1082,15 @@ createRoot(document.getElementById("root")!).render(
     <QueryClientProvider
       client={
         new QueryClient({
-          defaultOptions: { queries: { refetchInterval: 1000 } },
+          defaultOptions: {
+            queries: {
+              // Poll rapidly only while something is actually in flight, and
+              // stop entirely in a background tab. An idle library of hundreds
+              // of recordings otherwise re-fetches every second for no reason.
+              refetchInterval: (query) => (hasActiveWork(query.state.data) ? 1000 : 15000),
+              refetchIntervalInBackground: false,
+            },
+          },
         })
       }
     >

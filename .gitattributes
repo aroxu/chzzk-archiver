@@ -1,0 +1,12 @@
+# Shell scripts and systemd units break on Windows line endings, so keep them
+# LF regardless of the checkout platform. PowerShell scripts stay CRLF.
+* text=auto eol=lf
+*.ps1 text eol=crlf
+*.xml text eol=crlf
+*.sh text eol=lf
+*.service text eol=lf
+Dockerfile text eol=lf
+*.png binary
+*.jpg binary
+*.ico binary
+

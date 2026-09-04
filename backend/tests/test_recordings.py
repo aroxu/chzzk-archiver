@@ -1,0 +1,258 @@
+import asyncio
+from pathlib import Path
+
+from fastapi.testclient import TestClient
+
+from app import lifecycle
+from app.main import app
+from app.models import Broadcast, Channel, Entitlement, Recording, Subscription, User
+from app.services import recorder
+from app.services.media import recording_json, thumbnail_path
+
+
+def _fixture_recording(media: Path | None = None, state: str = "completed", user_id: int | None = None):
+    channel = Channel.create(chzzk_id="b" * 32, name="테스트 채널")
+    broadcast = Broadcast.create(
+        channel=channel.id,
+        broadcast_id="live:1",
+        source_type="live",
+        source_url="https://chzzk.naver.com/live/" + "b" * 32,
+        title="테스트 영상",
+    )
+    recording = Recording.create(
+        broadcast=broadcast.id,
+        state=state,
+        path=str(media) if media else None,
+        size=media.stat().st_size if media else 0,
+    )
+    if user_id:
+        Entitlement.create(user=user_id, recording=recording.id)
+    return recording
+
+
+def test_authenticated_range_streaming(tmp_path):
+    media = tmp_path / "sample.mp4"
+    media.write_bytes(bytes(range(100)))
+    thumbnail_path(media).write_bytes(b"jpeg")
+    with TestClient(app) as client:
+        created = client.post("/api/auth/setup", json={"username": "admin", "password": "secret"}).json()
+        recording_id = _fixture_recording(media, user_id=created["id"]).id
+        response = client.get(f"/api/media/{recording_id}", headers={"Range": "bytes=10-19"})
+        assert response.status_code == 206
+        assert response.content == bytes(range(10, 20))
+        assert response.headers["content-range"] == "bytes 10-19/100"
+        thumbnail = client.get(f"/api/thumbnails/{recording_id}")
+        assert thumbnail.status_code == 200
+        assert thumbnail.content == b"jpeg"
+
+
+def test_media_is_hidden_from_users_without_entitlement(tmp_path):
+    media = tmp_path / "private.mp4"
+    media.write_bytes(b"secret-bytes")
+    with TestClient(app) as admin:
+        admin.post("/api/auth/setup", json={"username": "admin", "password": "secret"})
+        invite = admin.post("/api/admin/invites").json()["token"]
+        recording_id = _fixture_recording(media).id
+    with TestClient(app) as viewer:
+        viewer.post("/api/auth/register", json={"username": "viewer", "password": "secret", "invite": invite})
+        assert viewer.get(f"/api/media/{recording_id}").status_code == 404
+        assert viewer.get("/api/recordings").json() == []
+
+
+def test_recording_uses_local_thumbnail_only(tmp_path):
+    media = tmp_path / "sample.mp4"
+    media.write_bytes(b"video")
+    channel = Channel.create(chzzk_id="thumbnail-channel", name="thumbnail channel")
+    broadcast = Broadcast.create(
+        channel=channel.id,
+        broadcast_id="thumbnail-video",
+        thumbnail_url="https://akamai.example/remote.jpg",
+    )
+    recording = Recording.create(broadcast=broadcast.id, state="completed", path=str(media), size=5)
+    assert recording_json(recording)["thumbnail"] is None
+    thumbnail_path(media).write_bytes(b"jpeg")
+    assert recording_json(recording)["thumbnail"] == f"/api/thumbnails/{recording.id}"
+
+
+def test_user_can_cancel_owned_queued_download():
+    with TestClient(app) as client:
+        created = client.post("/api/auth/setup", json={"username": "admin", "password": "secret"}).json()
+        recording_id = _fixture_recording(state="queued", user_id=created["id"]).id
+        assert client.post(f"/api/recordings/{recording_id}/cancel").status_code == 204
+        assert Recording.get_by_id(recording_id).state == "canceled"
+        assert client.post(f"/api/recordings/{recording_id}/cancel").status_code == 409
+
+
+def test_deleting_last_entitlement_removes_file(tmp_path):
+    media = tmp_path / "removable.mp4"
+    media.write_bytes(b"video")
+    thumbnail_path(media).write_bytes(b"jpeg")
+    with TestClient(app) as client:
+        created = client.post("/api/auth/setup", json={"username": "admin", "password": "secret"}).json()
+        recording_id = _fixture_recording(media, user_id=created["id"]).id
+        assert client.delete(f"/api/recordings/{recording_id}").status_code == 204
+    assert Recording.get_or_none(Recording.id == recording_id) is None
+    assert not media.exists()
+    assert not thumbnail_path(media).exists()
+
+
+def test_shared_recording_survives_one_user_deleting_it(tmp_path):
+    media = tmp_path / "shared.mp4"
+    media.write_bytes(b"video")
+    with TestClient(app) as admin:
+        owner = admin.post("/api/auth/setup", json={"username": "admin", "password": "secret"}).json()
+        invite = admin.post("/api/admin/invites").json()["token"]
+        recording = _fixture_recording(media, user_id=owner["id"])
+    with TestClient(app) as viewer:
+        second = viewer.post(
+            "/api/auth/register", json={"username": "viewer", "password": "secret", "invite": invite}
+        ).json()
+        Entitlement.create(user=second["id"], recording=recording.id)
+        assert viewer.delete(f"/api/recordings/{recording.id}").status_code == 204
+    assert Recording.get_or_none(Recording.id == recording.id) is not None
+    assert media.exists()
+
+
+def test_monitor_deduplicates_shared_channel_recording(monkeypatch):
+    first = User.create(username="first", password="x")
+    second = User.create(username="second", password="x")
+    channel = Channel.create(chzzk_id="shared-channel", name="shared")
+    Subscription.create(user=first.id, channel=channel.id, active=True, auto_record=True)
+    Subscription.create(user=second.id, channel=channel.id, active=True, auto_record=True)
+
+    async def fake_fetch_live(_chzzk_id, _client):
+        return {
+            "id": "live-77",
+            "title": "shared live",
+            "author": "shared",
+            "channel_image": None,
+            "category": None,
+            "thumbnail": None,
+        }
+
+    async def fake_recording(_recording_id):
+        return None
+
+    monkeypatch.setattr(recorder.chzzk, "fetch_live", fake_fetch_live)
+    monkeypatch.setattr(recorder, "run_recording", fake_recording)
+    first_started = asyncio.run(recorder.monitor_live_channels_once())
+    second_started = asyncio.run(recorder.monitor_live_channels_once())
+
+    assert len(first_started) == 1
+    assert second_started == []
+
+    recording = Recording.get_by_id(first_started[0])
+    recording.state = "failed"
+    recording.error = "temporary streamlink failure"
+    recording.save()
+    retried = asyncio.run(recorder.monitor_live_channels_once())
+    assert retried == first_started
+
+    assert Broadcast.select().count() == 1
+    assert Recording.select().count() == 1
+    assert Entitlement.select().count() == 2
+    assert Channel.get_by_id(channel.id).last_live is True
+    assert Recording.get_by_id(first_started[0]).state == "queued"
+
+
+def test_live_recording_runs_streamlink_and_remuxes(monkeypatch, tmp_path):
+    calls = []
+    captured_transport = []
+    existing_partial = tmp_path / "existing-live.ts"
+    existing_partial.write_bytes(b"existing-")
+
+    class FakeProcess:
+        def __init__(self, args, stdout=None):
+            self.args = args
+            self.stdout = stdout
+            self.returncode = 0
+
+        async def communicate(self):
+            if self.args[0] == "streamlink":
+                self.stdout.write(b"transport-stream")
+                self.stdout.flush()
+            elif self.args[0] == "ffmpeg":
+                captured_transport.append(Path(self.args[self.args.index("-i") + 1]).read_bytes())
+                Path(self.args[-1]).write_bytes(b"remuxed-mp4")
+            return b"", b""
+
+    async def fake_subprocess(*args, **kwargs):
+        calls.append(args)
+        return FakeProcess(args, kwargs.get("stdout"))
+
+    monkeypatch.setattr(recorder.settings, "recordings_dir", tmp_path)
+    monkeypatch.setattr(recorder.asyncio, "create_subprocess_exec", fake_subprocess)
+    monkeypatch.setattr(recorder, "generate_thumbnail", lambda _path: None)
+
+    user = User.create(username="recorder", password="x")
+    channel = Channel.create(chzzk_id="live-channel-id", name="live channel")
+    broadcast = Broadcast.create(
+        channel=channel.id,
+        broadcast_id="live-123",
+        source_type="live",
+        source_url="https://chzzk.naver.com/live/live-channel-id",
+        title="live title",
+    )
+    recording = Recording.create(
+        broadcast=broadcast.id,
+        state="queued",
+        path=str(existing_partial),
+        size=existing_partial.stat().st_size,
+    )
+    Entitlement.create(user=user.id, recording=recording.id)
+
+    asyncio.run(recorder.run_recording(recording.id))
+
+    assert calls[0][0] == "streamlink"
+    assert "--stdout" in calls[0]
+    assert calls[0][-2:] == ("https://chzzk.naver.com/live/live-channel-id", "1080p60,1080p,best")
+    assert calls[1][0] == "ffmpeg"
+    assert captured_transport == [b"existing-transport-stream"]
+
+    stored = Recording.get_by_id(recording.id)
+    assert stored.state == "completed"
+    assert stored.started_at is not None
+    assert Path(stored.path).read_bytes() == b"remuxed-mp4"
+    assert stored.size == len(b"remuxed-mp4")
+
+
+def test_cancelling_a_download_is_not_reported_as_failure(monkeypatch, tmp_path):
+    """A user cancel must land in `canceled`, never in `failed`."""
+    monkeypatch.setattr(recorder.settings, "recordings_dir", tmp_path)
+    monkeypatch.setattr(recorder, "generate_thumbnail", lambda _path: None)
+    monkeypatch.setattr(recorder.shutil, "which", lambda _name: None)
+    monkeypatch.setattr(
+        recorder.chzzk,
+        "resolve_direct",
+        lambda _url, _cookies: {"protocol": "progressive", "playback_url": "https://cdn/x.mp4", "total_size": 10},
+    )
+
+    def cancelled_download(*_args, **_kwargs):
+        raise recorder.DownloadCancelled
+
+    monkeypatch.setattr(recorder, "download_progressive", cancelled_download)
+
+    channel = Channel.create(chzzk_id="vod:cancel-channel", name="취소 채널")
+    broadcast = Broadcast.create(
+        channel=channel.id,
+        broadcast_id="vod:cancel-1",
+        source_type="vod",
+        source_url="https://chzzk.naver.com/video/1",
+        title="취소될 영상",
+    )
+    recording = Recording.create(broadcast=broadcast.id, state="queued")
+
+    asyncio.run(recorder.run_recording(recording.id))
+
+    stored = Recording.get_by_id(recording.id)
+    assert stored.state == "canceled"
+    assert stored.error is None
+    assert stored.path is None
+
+
+def test_requeue_interrupted_moves_running_recordings_back():
+    channel = Channel.create(chzzk_id="resume-channel", name="resume")
+    broadcast = Broadcast.create(channel=channel.id, broadcast_id="resume-1")
+    recording = Recording.create(broadcast=broadcast.id, state="recording")
+    assert lifecycle.requeue_interrupted() == [recording.id]
+    assert Recording.get_by_id(recording.id).state == "queued"

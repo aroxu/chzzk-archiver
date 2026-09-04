@@ -1,16 +1,44 @@
 services:
   archiver:
+    image: ${ARCHIVER_IMAGE:-ghcr.io/aroxu/chzzk-archiver:latest}
     build:
       context: .
       dockerfile: backend/Dockerfile
     ports:
       - "8000:8000"
+      - "8011:8011"
     environment:
       ARCHIVER_SECRET_KEY: ${ARCHIVER_SECRET_KEY:?set ARCHIVER_SECRET_KEY in .env}
       ARCHIVER_COOKIE_ENCRYPTION_KEY: ${ARCHIVER_COOKIE_ENCRYPTION_KEY:-}
       ARCHIVER_SECURE_COOKIES: ${ARCHIVER_SECURE_COOKIES:-false}
+      ARCHIVER_ENCODING_MODE: ${ARCHIVER_ENCODING_MODE:-local}
+      ARCHIVER_ENCODING_VIDEO_ENCODER: ${ARCHIVER_ENCODING_VIDEO_ENCODER:-auto}
+      ARCHIVER_ENCODING_QUALITY: ${ARCHIVER_ENCODING_QUALITY:-23}
+      ARCHIVER_ENCODING_PRESET: ${ARCHIVER_ENCODING_PRESET:-medium}
+      ARCHIVER_ENCODING_AUDIO: ${ARCHIVER_ENCODING_AUDIO:-copy}
+      ARCHIVER_WORKER_TOKEN: ${ARCHIVER_WORKER_TOKEN:-}
+      ARCHIVER_WORKER_STREAM_HOST: ${ARCHIVER_WORKER_STREAM_HOST:-}
     volumes:
       - ./data:/data
       - ./recordings:/recordings
     restart: unless-stopped
 
+  encoder-worker:
+    profiles: ["remote-worker"]
+    image: ${ARCHIVER_WORKER_IMAGE:-ghcr.io/aroxu/chzzk-archiver-worker:latest}
+    build:
+      context: .
+      dockerfile: worker/Dockerfile
+    environment:
+      ARCHIVER_WORKER_SERVER: http://archiver:8000
+      ARCHIVER_WORKER_TOKEN: ${ARCHIVER_WORKER_TOKEN:?set ARCHIVER_WORKER_TOKEN in .env}
+      ARCHIVER_WORKER_ID: ${ARCHIVER_WORKER_ID:-docker-worker}
+      ARCHIVER_WORKER_FFMPEG: ${ARCHIVER_WORKER_FFMPEG:-ffmpeg}
+      ARCHIVER_WORKER_POLL_INTERVAL: ${ARCHIVER_WORKER_POLL_INTERVAL:-5}
+      ARCHIVER_ENCODING_VIDEO_ENCODER: ${ARCHIVER_ENCODING_VIDEO_ENCODER:-auto}
+    depends_on:
+      - archiver
+    restart: unless-stopped
+    # Uncomment to hand an Intel/AMD GPU to the worker for hardware encoding.
+    # devices:
+    #   - /dev/dri:/dev/dri

@@ -1,0 +1,20 @@
+<service>
+  <id>chzzk-archiver-worker</id>
+  <name>CHZZK Archive Encoder Worker</name>
+  <description>Remote HEVC encoding worker for CHZZK Archive</description>
+  <executable>%BASE%\archiver-worker.exe</executable>
+  <!-- install-worker-service.ps1 rewrites these values. Keeping the token in
+       the service environment stops it from showing up in the process list,
+       and a service account cannot read per-user environment variables. -->
+  <env name="ARCHIVER_WORKER_SERVER" value="__ARCHIVER_WORKER_SERVER__" />
+  <env name="ARCHIVER_WORKER_TOKEN" value="__ARCHIVER_WORKER_TOKEN__" />
+  <env name="ARCHIVER_ENCODING_VIDEO_ENCODER" value="__ARCHIVER_ENCODING_VIDEO_ENCODER__" />
+  <workingdirectory>%BASE%</workingdirectory>
+  <log mode="roll-by-size">
+    <sizeThreshold>10485760</sizeThreshold>
+    <keepFiles>4</keepFiles>
+  </log>
+  <onfailure action="restart" delay="10 sec" />
+  <onfailure action="restart" delay="30 sec" />
+  <stoptimeout>30 sec</stoptimeout>
+</service>

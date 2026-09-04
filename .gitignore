@@ -12,4 +12,7 @@ web/dist/
 web/*.tsbuildinfo
 .pnpm-store/
 extension/dist/
+build/
+dist/
+*.spec
 example_ignore/
