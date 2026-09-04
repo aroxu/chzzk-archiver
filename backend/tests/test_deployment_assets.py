@@ -151,9 +151,13 @@ def test_gitattributes_pins_line_endings():
 
 def test_windows_builder_installs_runtime_dependencies_in_an_isolated_venv():
     builder = (SCRIPTS / "build-worker.ps1").read_text(encoding="utf-8")
+    assert 'Get-Command $commandName -ErrorAction SilentlyContinue' in builder
+    assert 'sys.version_info >= (3, 12)' in builder
+    assert '-m venv $venvPath' in builder
     assert "-m venv $buildVenvPath" in builder
-    assert "uv pip install --python $buildPython $workspace pyinstaller" in builder
-    assert builder.index("uv pip install") < builder.index("-m PyInstaller")
+    assert "-m pip install --disable-pip-version-check $workspace pyinstaller" in builder
+    assert builder.index("-m pip install") < builder.index("-m PyInstaller")
+    assert "uv pip" not in builder
     assert "archiver-worker.exe\") --doctor" in builder
 
 
