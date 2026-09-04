@@ -73,9 +73,9 @@ def choose_encoder(requested: str, available: list[str]) -> str:
 
 
 def output_extension(audio_mode: str) -> str:
-    # FLAC in ISO-BMFF has poor player support. Matroska is predictable on all
-    # worker platforms; copy mode keeps MP4 for the existing web player.
-    return ".mkv" if audio_mode == "flac24" else ".mp4"
+    # Both copy and FLAC modes are published as MP4. Modern FFmpeg supports
+    # FLAC in ISO-BMFF when the experimental muxer flag is enabled.
+    return ".mp4"
 
 
 # Each family names its speed/quality tradeoff differently, so "auto" and any
@@ -122,6 +122,8 @@ def ffmpeg_encode_command(
         "-hide_banner",
         "-loglevel",
         "warning",
+        "-fflags",
+        "+genpts",
         "-i",
         str(source),
         "-map",
@@ -159,12 +161,18 @@ def ffmpeg_encode_command(
     if audio_mode == "copy":
         command += ["-c:a", "copy"]
     elif audio_mode == "flac24":
-        command += ["-c:a", "flac", "-sample_fmt", "s32", "-bits_per_raw_sample", "24"]
+        command += [
+            "-c:a", "flac", "-sample_fmt:a", "s32",
+            "-bits_per_raw_sample:a", "24", "-strict", "experimental",
+        ]
     else:
         raise ValueError(f"지원하지 않는 오디오 모드입니다: {audio_mode}")
 
     if destination.suffix.lower() == ".mp4":
-        command += ["-tag:v", "hvc1", "-movflags", "+faststart"]
+        command += [
+            "-tag:v", "hvc1", "-avoid_negative_ts", "make_zero",
+            "-movflags", "+faststart",
+        ]
     command.append(str(destination))
     return command
 
@@ -188,10 +196,16 @@ def ffmpeg_stream_command(
         ffmpeg=ffmpeg,
     )
     # The file-oriented helper cannot infer a container from pipe:1.
-    # AAC copied from an MPEG-TS input remains valid in MPEG-TS without needing
-    # codec extradata. FLAC is not supported by MPEG-TS, so that mode uses the
-    # equally streamable Matroska container.
-    command[-1:-1] = ["-f", "matroska" if audio_mode == "flac24" else "mpegts"]
+    # AAC copied from an MPEG-TS input stays in MPEG-TS. FLAC is sent as a
+    # fragmented MP4 so the worker can write it to a non-seekable TCP pipe; the
+    # controller later remuxes it into a regular faststart MP4.
+    if audio_mode == "flac24":
+        command[-1:-1] = [
+            "-tag:v", "hvc1", "-avoid_negative_ts", "make_zero", "-f", "mp4",
+            "-movflags", "frag_keyframe+empty_moov+default_base_moof",
+        ]
+    else:
+        command[-1:-1] = ["-f", "mpegts"]
     return command
 
 
@@ -220,6 +234,8 @@ def probe_duration(path: Path, ffprobe: str = "ffprobe") -> float:
             ],
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             check=False,
             timeout=30,
         )
@@ -229,7 +245,9 @@ def probe_duration(path: Path, ffprobe: str = "ffprobe") -> float:
         return 0.0
 
 
-def probe_media(path: Path, ffprobe: str = "ffprobe") -> dict:
+def probe_media(
+    path: Path, ffprobe: str = "ffprobe", expected_audio_mode: str | None = None
+) -> dict:
     """Read stream metadata and reject missing/empty output."""
     if not path.exists() or path.stat().st_size == 0:
         raise RuntimeError("인코딩 결과 파일이 비어 있습니다")
@@ -239,13 +257,15 @@ def probe_media(path: Path, ffprobe: str = "ffprobe") -> dict:
             "-v",
             "error",
             "-show_entries",
-            "stream=codec_type,codec_name,bits_per_raw_sample",
+            "stream=codec_type,codec_name,bits_per_raw_sample:format=format_name,duration",
             "-of",
             "json",
             str(path),
         ],
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
         check=True,
     )
     payload = json.loads(result.stdout)
@@ -255,4 +275,10 @@ def probe_media(path: Path, ffprobe: str = "ffprobe") -> dict:
         raise RuntimeError("인코딩 결과에 비디오 스트림이 없습니다")
     if video.get("codec_name") not in {"hevc", "h265"}:
         raise RuntimeError("인코딩 결과가 HEVC가 아닙니다")
+    if expected_audio_mode == "flac24":
+        audio = next((stream for stream in streams if stream.get("codec_type") == "audio"), None)
+        if not audio or audio.get("codec_name") != "flac":
+            raise RuntimeError("인코딩 결과 오디오가 FLAC이 아닙니다")
+        if str(audio.get("bits_per_raw_sample") or "") != "24":
+            raise RuntimeError("인코딩 결과 오디오가 24-bit FLAC이 아닙니다")
     return payload

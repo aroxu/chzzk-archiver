@@ -51,7 +51,7 @@ ARCHIVER_DOWNLOAD_CONNECTIONS=16
 기본값은 `auto / quality 23 / preset auto`와 원본 오디오 복사입니다. `auto`는 짧은 시험
 인코딩을 통과한 GPU 인코더를 우선 사용하고, 없으면 `libx265`로 대체합니다.
 CPU 인코더는 CRF, NVENC는 CQP를 사용합니다. `ARCHIVER_ENCODING_AUDIO=flac24`를 지정하면
-24-bit FLAC 오디오를 담기 위해 결과 컨테이너가 MKV로 바뀝니다. 이미 손실 압축된 라이브 AAC를
+24-bit FLAC 오디오와 HEVC 영상을 MP4 컨테이너에 저장합니다. 이미 손실 압축된 라이브 AAC를
 FLAC으로 변환해도 음질이 복원되지는 않으며 용량은 증가할 수 있습니다.
 
 ```dotenv
@@ -70,8 +70,9 @@ ARCHIVER_MAX_ENCODINGS=1
 
 원격 모드에서는 HTTP가 작업 lease와 완료 보고만 담당합니다. 실제 미디어는 8011번 전이중 TCP
 소켓으로 전송합니다. 컨트롤러는 녹화 중인 MPEG-TS 파일을 끝까지 따라 읽어 워커에 보내는 동시에,
-같은 연결의 반대 방향으로 FFmpeg 결과(MPEG-TS, FLAC 모드는 Matroska)를 받습니다. 따라서 녹화 완료를 기다리지 않고 인코딩이
-시작되며 워커가 늦게 연결돼도 로컬 원본의 처음부터 처리할 수 있습니다.
+같은 연결의 반대 방향으로 FFmpeg 결과(MPEG-TS, FLAC 모드는 fragmented MP4)를 받습니다.
+컨트롤러는 전송 완료 후 이를 일반 faststart MP4로 마무리합니다. 따라서 녹화 완료를 기다리지
+않고 인코딩이 시작되며 워커가 늦게 연결돼도 로컬 원본의 처음부터 처리할 수 있습니다.
 
 ```dotenv
 # Controller

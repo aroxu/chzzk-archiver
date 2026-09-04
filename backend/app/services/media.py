@@ -26,8 +26,8 @@ def generate_thumbnail(video_path: Path) -> Path:
         text=True,
         check=True,
     )
-    # Streamed Matroska carries no duration in its header, so ffprobe answers
-    # "N/A". Grab an early frame instead of failing the whole thumbnail.
+    # Some streamed containers carry no duration in their header, so ffprobe
+    # answers "N/A". Grab an early frame instead of failing the thumbnail.
     try:
         duration = float(probe.stdout.strip())
     except ValueError:
@@ -61,9 +61,9 @@ def recording_json(r: Recording) -> dict:
     progress = round(reported_size / r.total_size * 100, 1) if r.total_size else None
     process = active_processes.get(r.id)
     process_active = bool(process and process.returncode is None)
-    recorded_seconds = 0
+    recorded_seconds = max(0, int(r.duration_seconds or 0))
     started_at = as_utc(r.started_at)
-    if started_at:
+    if not recorded_seconds and started_at and r.state in {"queued", "recording", "interrupted"}:
         finished_at = as_utc(r.finished_at) or datetime.now(UTC)
         recorded_seconds = max(0, int((finished_at - started_at).total_seconds()))
     thumbnail = f"/api/thumbnails/{r.id}" if r.path and thumbnail_path(Path(r.path)).exists() else None
@@ -90,6 +90,7 @@ def recording_json(r: Recording) -> dict:
         "encoding_eta_seconds": encoding.eta_seconds if encoding else None,
         "encoding_processed_seconds": encoding.processed_seconds if encoding else None,
         "recorded_seconds": recorded_seconds,
+        "duration_seconds": max(0, float(r.duration_seconds or 0)),
         "recording_active": process_active,
         "created_at": as_utc(r.created_at),
         "finished_at": as_utc(r.finished_at),

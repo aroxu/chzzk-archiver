@@ -26,8 +26,8 @@ ARCHIVER_WORKER_STREAM_PORT=8011
   QSV에서는 global quality 23으로 해석합니다.
 - `ARCHIVER_ENCODING_PRESET=auto`: 인코더별 균형 프리셋으로 변환됩니다. NVENC는 `p5`,
   libx265/QSV는 `medium`, AMF는 `balanced`입니다.
-- `ARCHIVER_ENCODING_AUDIO=copy`: 라이브 원본 음성을 그대로 보존합니다. `flac24`는 MKV와
-  24-bit FLAC을 사용하지만 손실 음원의 품질을 복원하지 않으며 용량이 늘 수 있습니다.
+- `ARCHIVER_ENCODING_AUDIO=copy`: 라이브 원본 음성을 그대로 보존합니다. `flac24`는 MP4 안에
+  HEVC와 24-bit FLAC을 저장하지만 손실 음원의 품질을 복원하지 않으며 용량이 늘 수 있습니다.
 
 컨트롤러의 API 포트와 TCP 8011 포트를 워커에서 접근할 수 있어야 합니다. 인터넷에 직접
 노출하기보다 WireGuard/Tailscale 또는 내부망을 권장합니다. API는 HTTPS를 사용하고 TCP 포트는

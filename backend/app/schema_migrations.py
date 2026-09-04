@@ -9,6 +9,7 @@ RECORDING_COLUMNS = {
     "total_size": "INTEGER DEFAULT 0",
     "speed_bps": "INTEGER DEFAULT 0",
     "eta_seconds": "INTEGER",
+    "duration_seconds": "REAL DEFAULT 0",
     "started_at": "DATETIME",
 }
 
@@ -41,6 +42,11 @@ def migrate() -> None:
     for column, definition in ENCODING_COLUMNS.items():
         if column not in encoding_existing:
             database.execute_sql(f"ALTER TABLE encoding_jobs ADD COLUMN {column} {definition}")
+    database.execute_sql(
+        "UPDATE encoding_jobs SET output_extension = '.mp4' "
+        "WHERE audio_mode = 'flac24' "
+        "AND state IN ('queued', 'leased', 'encoding', 'uploading')"
+    )
     database.execute_sql(
         "UPDATE recordings SET started_at = created_at "
         "WHERE started_at IS NULL AND state IN ('queued', 'recording', 'interrupted')"

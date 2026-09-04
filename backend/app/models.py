@@ -118,6 +118,7 @@ class Recording(BaseModel):
     total_size = IntegerField(default=0)
     speed_bps = IntegerField(default=0)
     eta_seconds = IntegerField(null=True)
+    duration_seconds = FloatField(default=0)
     error = TextField(null=True)
     created_at = DateTimeField(default=utcnow)
     started_at = DateTimeField(null=True)

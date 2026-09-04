@@ -75,6 +75,29 @@ def test_recording_uses_local_thumbnail_only(tmp_path):
     assert recording_json(recording)["thumbnail"] == f"/api/thumbnails/{recording.id}"
 
 
+def test_recording_uses_media_duration_instead_of_wall_clock(tmp_path):
+    media = tmp_path / "duration.mp4"
+    media.write_bytes(b"video")
+    recording = _fixture_recording(media)
+    Recording.update(duration_seconds=3723.5).where(Recording.id == recording.id).execute()
+
+    payload = recording_json(Recording.get_by_id(recording.id))
+
+    assert payload["duration_seconds"] == 3723.5
+    assert payload["recorded_seconds"] == 3723
+
+
+def test_duration_backfill_reads_completed_media(monkeypatch, tmp_path):
+    media = tmp_path / "legacy.mp4"
+    media.write_bytes(b"legacy-video")
+    recording = _fixture_recording(media)
+    monkeypatch.setattr(lifecycle, "probe_duration", lambda _path: 456.75)
+
+    asyncio.run(lifecycle.backfill_durations())
+
+    assert Recording.get_by_id(recording.id).duration_seconds == 456.75
+
+
 def test_user_can_cancel_owned_queued_download():
     with TestClient(app) as client:
         created = client.post("/api/auth/setup", json={"username": "admin", "password": "secret"}).json()

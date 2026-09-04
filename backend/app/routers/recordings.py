@@ -134,6 +134,7 @@ async def manual(
             rec.path = None
             rec.size = 0
             rec.total_size = 0
+            rec.duration_seconds = 0
         rec.state = "queued"
         rec.speed_bps = 0
         rec.eta_seconds = None

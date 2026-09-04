@@ -55,6 +55,7 @@ type Recording = {
   encoding_eta_seconds?: number;
   encoding_processed_seconds?: number;
   recorded_seconds: number;
+  duration_seconds: number;
   recording_active: boolean;
   created_at: string;
   error?: string;
@@ -602,7 +603,7 @@ function ArchivePlayer({ recording, onAspectRatio }: { recording: Recording; onA
   const video = useRef<HTMLVideoElement>(null);
   const [playing, setPlaying] = useState(false);
   const [current, setCurrent] = useState(0);
-  const [duration, setDuration] = useState(0);
+  const [duration, setDuration] = useState(recording.duration_seconds || 0);
   const [volume, setVolume] = useState(1);
   const [muted, setMuted] = useState(false);
   const [waiting, setWaiting] = useState(true);
@@ -644,7 +645,10 @@ function ArchivePlayer({ recording, onAspectRatio }: { recording: Recording; onA
         onPlay={() => setPlaying(true)}
         onPause={() => setPlaying(false)}
         onTimeUpdate={(event) => setCurrent(event.currentTarget.currentTime)}
-        onDurationChange={(event) => setDuration(event.currentTarget.duration)}
+        onDurationChange={(event) => {
+          const measured = event.currentTarget.duration;
+          if (Number.isFinite(measured) && measured > 0) setDuration(measured);
+        }}
         onLoadedMetadata={(event) => {
           const { videoWidth, videoHeight } = event.currentTarget;
           if (videoWidth > 0 && videoHeight > 0) onAspectRatio?.(videoWidth / videoHeight);

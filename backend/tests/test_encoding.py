@@ -40,12 +40,18 @@ def test_codec_commands_use_crf_for_cpu_and_cqp_for_nvenc():
     assert cpu[cpu.index("-crf") + 1] == "23"
     assert gpu[gpu.index("-rc") + 1 : gpu.index("-rc") + 4] == ["constqp", "-qp", "23"]
     assert stream[-3:] == ["-f", "mpegts", "pipe:1"]
-    assert ffmpeg_stream_command(encoder="libx265", audio_mode="flac24")[-3:] == [
-        "-f",
-        "matroska",
-        "pipe:1",
-    ]
-    assert output_extension("flac24") == ".mkv"
+    flac_stream = ffmpeg_stream_command(encoder="libx265", audio_mode="flac24")
+    assert flac_stream[-1] == "pipe:1"
+    assert flac_stream[flac_stream.index("-f") + 1] == "mp4"
+    assert "frag_keyframe+empty_moov+default_base_moof" in flac_stream
+    assert "matroska" not in flac_stream
+    assert output_extension("flac24") == ".mp4"
+    flac_file = ffmpeg_encode_command(
+        Path("in.ts"), Path("out.mp4"), encoder="libx265", audio_mode="flac24"
+    )
+    assert flac_file[flac_file.index("-sample_fmt:a") + 1] == "s32"
+    assert flac_file[flac_file.index("-bits_per_raw_sample:a") + 1] == "24"
+    assert flac_file[flac_file.index("-strict") + 1] == "experimental"
 
 
 def test_ffmpeg_progress_helpers():
@@ -86,7 +92,7 @@ def test_encoding_heartbeat_calculates_progress_and_eta(tmp_path):
 
 
 def test_thumbnail_survives_missing_duration(monkeypatch, tmp_path):
-    """Streamed Matroska has no header duration; ffprobe answers 'N/A'."""
+    """Some streamed containers have no header duration; ffprobe answers N/A."""
     from app.services import media
 
     video = tmp_path / "streamed.mkv"

@@ -13,6 +13,7 @@ from fastapi import FastAPI
 from .config import logger, settings
 from .db import database, session
 from .models import Channel, Recording
+from .encoding_commands import probe_duration
 from .schema_migrations import migrate
 from .services import chzzk
 from .services.encoding import process_local_job, resume_local_jobs
@@ -48,6 +49,30 @@ async def backfill_thumbnails() -> None:
             await asyncio.to_thread(generate_thumbnail, video_path)
         except Exception as exc:
             logger.warning("thumbnail backfill failed path=%s error=%s", video_path, str(exc)[:200])
+
+
+async def backfill_durations() -> None:
+    """Populate media-derived durations for archives created before this field existed."""
+    with session():
+        pending = [
+            (row.id, Path(row.path))
+            for row in Recording.select(Recording.id, Recording.path).where(
+                Recording.state == "completed",
+                Recording.path.is_null(False),
+                Recording.duration_seconds <= 0,
+            )
+            if row.path
+        ]
+    for recording_id, video_path in pending:
+        if not video_path.exists():
+            continue
+        duration = await asyncio.to_thread(probe_duration, video_path)
+        if duration > 0:
+            with session():
+                Recording.update(duration_seconds=duration).where(
+                    Recording.id == recording_id,
+                    Recording.duration_seconds <= 0,
+                ).execute()
 
 
 async def backfill_channel_profiles() -> None:
@@ -129,6 +154,7 @@ async def lifespan(_: FastAPI):
     tasks = [
         asyncio.create_task(scheduler()),
         asyncio.create_task(backfill_thumbnails()),
+        asyncio.create_task(backfill_durations()),
         asyncio.create_task(backfill_channel_profiles()),
     ]
     tasks += [asyncio.create_task(run_recording(rid)) for rid in resume_ids]

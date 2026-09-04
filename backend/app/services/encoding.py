@@ -199,7 +199,7 @@ def heartbeat_job(
 
 def upload_destination(job: EncodingJob) -> Path:
     source = Path(job.recording.path)
-    stream_extension = ".mkv" if job.audio_mode == "flac24" else ".ts"
+    stream_extension = ".mp4" if job.audio_mode == "flac24" else ".ts"
     return source.with_name(f".{source.stem}.worker-{job.id}.stream{stream_extension}")
 
 
@@ -264,10 +264,10 @@ def fail_job(job_id: int, worker_id: str | None, error: str) -> None:
 
 def _install_output(job_id: int, encoded: Path) -> Path:
     """Validate then atomically publish encoded media and update both rows."""
-    probe_media(encoded)
     with session():
         job = EncodingJob.get_by_id(job_id)
         recording = Recording.get_by_id(job.recording_id)
+        probe_media(encoded, expected_audio_mode=job.audio_mode)
         if job.state == "canceled" or recording.state == "canceled":
             encoded.unlink(missing_ok=True)
             raise RuntimeError("encoding job was canceled")
@@ -279,7 +279,9 @@ def _install_output(job_id: int, encoded: Path) -> Path:
             result = subprocess.run(
                 [
                     "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
-                    "-i", str(encoded), "-c", "copy", "-tag:v", "hvc1",
+                    "-fflags", "+genpts", "-i", str(encoded), "-c", "copy",
+                    "-tag:v", "hvc1", "-avoid_negative_ts", "make_zero",
+                    "-strict", "experimental",
                     "-movflags", "+faststart", str(publishable),
                 ],
                 capture_output=True,
@@ -288,8 +290,10 @@ def _install_output(job_id: int, encoded: Path) -> Path:
             if result.returncode != 0:
                 publishable.unlink(missing_ok=True)
                 raise RuntimeError(result.stderr.decode(errors="replace")[-1000:])
-            probe_media(publishable)
+            media_info = probe_media(publishable, expected_audio_mode=job.audio_mode)
             encoded.unlink(missing_ok=True)
+        else:
+            media_info = probe_media(publishable, expected_audio_mode=job.audio_mode)
         old_thumbnail = thumbnail_path(source)
         publishable.replace(final)
         if source != final:
@@ -300,6 +304,10 @@ def _install_output(job_id: int, encoded: Path) -> Path:
         except Exception as exc:
             logger.warning("encoded thumbnail failed recording=%s error=%s", recording.id, str(exc)[:200])
         size = final.stat().st_size
+        try:
+            duration = float(media_info.get("format", {}).get("duration") or 0)
+        except (TypeError, ValueError):
+            duration = probe_duration(final)
         now = datetime.now(UTC)
         with database.atomic():
             EncodingJob.update(
@@ -320,6 +328,7 @@ def _install_output(job_id: int, encoded: Path) -> Path:
                 total_size=size,
                 speed_bps=0,
                 eta_seconds=0,
+                duration_seconds=max(0, duration),
                 error=None,
                 finished_at=now,
             ).where(Recording.id == recording.id, Recording.state == "processing").execute()

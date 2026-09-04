@@ -17,6 +17,7 @@ from peewee import IntegrityError
 
 from ..config import logger, settings
 from ..db import session
+from ..encoding_commands import probe_duration
 from ..models import Broadcast, Channel, EncodingJob, Entitlement, Recording, Subscription
 from . import chzzk
 from .credentials import user_cookies
@@ -72,6 +73,7 @@ def ensure_recording(
         recording.path = None
         recording.size = 0
         recording.total_size = 0
+        recording.duration_seconds = 0
         recording.save()
         created = True
     for uid in users:
@@ -338,7 +340,10 @@ async def run_recording(recording_id: int) -> None:
                     _redact("; ".join(errors))[-300:],
                 )
             remux = await asyncio.create_subprocess_exec(
-                "ffmpeg", "-y", "-i", str(temp), "-c", "copy", "-movflags", "+faststart", str(final),
+                "ffmpeg", "-y", "-fflags", "+genpts", "-i", str(temp),
+                "-map", "0:v:0", "-map", "0:a?", "-c", "copy",
+                "-avoid_negative_ts", "make_zero",
+                "-movflags", "+faststart", str(final),
                 stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
             )
             active_processes[recording_id] = remux
@@ -355,6 +360,7 @@ async def run_recording(recording_id: int) -> None:
             except Exception as exc:
                 logger.warning("thumbnail generation failed recording=%s error=%s", recording_id, str(exc)[:200])
             completed_size = final.stat().st_size
+            media_duration = await asyncio.to_thread(probe_duration, final)
             target_state = "completed" if settings.encoding_mode == "disabled" else "processing"
             if not _finalize(
                 recording_id,
@@ -364,6 +370,7 @@ async def run_recording(recording_id: int) -> None:
                 total_size=completed_size,
                 speed_bps=0,
                 eta_seconds=0,
+                duration_seconds=media_duration,
                 finished_at=datetime.now(UTC),
             ):
                 # Cancelled while we were finishing: drop the artefacts we just made.
@@ -413,6 +420,7 @@ async def run_recording(recording_id: int) -> None:
                     total_size=0,
                     speed_bps=0,
                     eta_seconds=None,
+                    duration_seconds=0,
                     error=None,
                     finished_at=datetime.now(UTC),
                 ).where(Recording.id == recording_id).execute()
