@@ -200,9 +200,11 @@ async def run_recording(recording_id: int) -> None:
             logger.info("recording=%s canceled before capture started", recording_id)
             return
         remote_job = None
-        if settings.encoding_mode == "remote":
+        if settings.encoding_mode == "remote" and source_type == "live":
             # The TCP worker may start consuming this growing transport stream
-            # immediately. The local file remains the retry/fallback source.
+            # immediately. VOD/DASH inputs are not safe to stream while growing:
+            # fragmented MP4 needs its initialization/index data first, so those
+            # jobs are queued only after the local download and remux finish.
             remote_job = enqueue_encoding(recording_id, temp, mark_processing=False)
         logger.info("recording=%s started type=%s title=%s", recording_id, source_type, title)
         try:
@@ -249,7 +251,12 @@ async def run_recording(recording_id: int) -> None:
                         headers += f"Cookie: {cookie_header}\r\n"
                     args = [
                         "ffmpeg", "-y", "-loglevel", "warning", "-user_agent", "Mozilla/5.0",
-                        "-headers", headers, "-i", direct["playback_url"], "-c", "copy", "-f", "mpegts", str(temp),
+                        "-headers", headers,
+                        # CHZZK uses CMAF/fMP4 media with .m4v segment names. New
+                        # FFmpeg releases reject the extension/MIME mismatch by
+                        # default unless the HLS demuxer is put in compatibility mode.
+                        "-extension_picky", "false",
+                        "-i", direct["playback_url"], "-c", "copy", "-f", "mpegts", str(temp),
                     ]
                 progress_task = None
                 try:
@@ -329,16 +336,21 @@ async def run_recording(recording_id: int) -> None:
                 if job:
                     await process_local_job(job.id)
             elif settings.encoding_mode == "remote":
-                # A worker could exhaust its retries before a long capture
-                # finished. In that case publish the safe original now.
-                with session():
-                    current_job = EncodingJob.get_by_id(remote_job.id)
-                    if current_job.state == "failed":
-                        Recording.update(
-                            state="completed",
-                            error="원격 인코딩 실패, 원본 보존됨",
-                            finished_at=datetime.now(UTC),
-                        ).where(Recording.id == recording_id).execute()
+                if remote_job is None:
+                    # VOD and clip files become streamable only after +faststart
+                    # remuxing has put MP4 metadata at the front of the file.
+                    remote_job = enqueue_encoding(recording_id, final)
+                else:
+                    # A worker could exhaust its retries before a long capture
+                    # finished. In that case publish the safe original now.
+                    with session():
+                        current_job = EncodingJob.get_by_id(remote_job.id)
+                        if current_job.state == "failed":
+                            Recording.update(
+                                state="completed",
+                                error="원격 인코딩 실패, 원본 보존됨",
+                                finished_at=datetime.now(UTC),
+                            ).where(Recording.id == recording_id).execute()
             logger.info("recording=%s capture completed bytes=%s", recording_id, completed_size)
         except DownloadCancelled:
             active_processes.pop(recording_id, None)

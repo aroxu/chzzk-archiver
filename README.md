@@ -111,6 +111,9 @@ Windows 단일 실행 파일은 `scripts/build-worker.ps1`로 생성됩니다. �
   -WinSW C:\path\to\WinSW-x64.exe
 ```
 
+설치 시 FFmpeg의 절대 경로를 자동으로 저장합니다. 자동 탐지가 안 되면
+`-FFmpeg C:\ffmpeg\bin\ffmpeg.exe`를 추가하십시오.
+
 전용 계정으로 서비스를 돌리려면 `-ServiceAccount`와 `-ServicePassword`를 함께 넘깁니다.
 제거는 `.\scripts\uninstall-worker.ps1 -Service` 또는 `-Task`를 사용하며, 설치 파일까지
 지우려면 `-RemoveFiles`를 추가합니다.

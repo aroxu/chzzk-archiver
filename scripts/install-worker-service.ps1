@@ -17,6 +17,7 @@ param(
     [Parameter(Mandatory = $true)][string]$WinSW,
     [ValidateSet("auto", "hevc_nvenc", "hevc_qsv", "hevc_amf", "hevc_vaapi", "libx265")]
     [string]$Encoder = "auto",
+    [string]$FFmpeg,
     [string]$WorkerExe = "dist\worker\archiver-worker.exe",
     [string]$InstallDirectory = "$env:ProgramData\CHZZKArchiveWorker",
     [string]$ServiceAccount,
@@ -40,6 +41,14 @@ $worker = (Resolve-Path -LiteralPath $workerPath).Path
 $wrapper = (Resolve-Path -LiteralPath $WinSW).Path
 $template = Join-Path $workspace "deploy\windows\archiver-worker.xml"
 
+if (-not $FFmpeg) {
+    $ffmpegCommand = Get-Command ffmpeg -ErrorAction SilentlyContinue | Select-Object -First 1
+    $FFmpeg = if ($ffmpegCommand) { $ffmpegCommand.Source } else { "ffmpeg" }
+}
+if ([IO.Path]::IsPathRooted($FFmpeg) -and -not (Test-Path -LiteralPath $FFmpeg -PathType Leaf)) {
+    throw "FFmpeg executable not found at '$FFmpeg'."
+}
+
 New-Item -ItemType Directory -Force -Path $InstallDirectory | Out-Null
 $serviceExe = Join-Path $InstallDirectory "archiver-worker-service.exe"
 $serviceXml = Join-Path $InstallDirectory "archiver-worker-service.xml"
@@ -58,6 +67,7 @@ Copy-Item -Force -LiteralPath $wrapper -Destination $serviceExe
 $config = (Get-Content -LiteralPath $template -Raw).
     Replace("__ARCHIVER_WORKER_SERVER__", [System.Security.SecurityElement]::Escape($Server)).
     Replace("__ARCHIVER_WORKER_TOKEN__", [System.Security.SecurityElement]::Escape($Token)).
+    Replace("__ARCHIVER_WORKER_FFMPEG__", [System.Security.SecurityElement]::Escape($FFmpeg)).
     Replace("__ARCHIVER_ENCODING_VIDEO_ENCODER__", [System.Security.SecurityElement]::Escape($Encoder))
 
 if ($ServiceAccount) {
@@ -92,5 +102,6 @@ Write-Host "Installed: CHZZK Archive Encoder Worker"
 Write-Host "  binary : $InstallDirectory\archiver-worker.exe"
 Write-Host "  config : $serviceXml"
 Write-Host "  logs   : $InstallDirectory"
+Write-Host "  ffmpeg : $FFmpeg"
 Write-Host "  encoder: $Encoder"
 Write-Host "Remove with: scripts\uninstall-worker.ps1 -Service"

@@ -69,6 +69,7 @@ def test_windows_service_config_placeholders_are_substituted():
     assert placeholders == {
         "__ARCHIVER_WORKER_SERVER__",
         "__ARCHIVER_WORKER_TOKEN__",
+        "__ARCHIVER_WORKER_FFMPEG__",
         "__ARCHIVER_ENCODING_VIDEO_ENCODER__",
     }
 
@@ -125,6 +126,14 @@ def test_every_worker_install_path_persists_the_encoder_setting():
     compose = (ROOT / "docker-compose.yml").read_text(encoding="utf-8")
     worker_service = compose.split("encoder-worker:", 1)[1]
     assert expected in worker_service
+
+
+def test_windows_service_persists_an_absolute_ffmpeg_path():
+    template = (DEPLOY / "windows" / "archiver-worker.xml").read_text(encoding="utf-8")
+    installer = (SCRIPTS / "install-worker-service.ps1").read_text(encoding="utf-8")
+    assert "ARCHIVER_WORKER_FFMPEG" in template
+    assert "Get-Command ffmpeg" in installer
+    assert 'Replace("__ARCHIVER_WORKER_FFMPEG__"' in installer
 
 
 def test_remote_worker_guide_covers_every_distribution():

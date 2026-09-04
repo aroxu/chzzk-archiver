@@ -8,6 +8,7 @@
        and a service account cannot read per-user environment variables. -->
   <env name="ARCHIVER_WORKER_SERVER" value="__ARCHIVER_WORKER_SERVER__" />
   <env name="ARCHIVER_WORKER_TOKEN" value="__ARCHIVER_WORKER_TOKEN__" />
+  <env name="ARCHIVER_WORKER_FFMPEG" value="__ARCHIVER_WORKER_FFMPEG__" />
   <env name="ARCHIVER_ENCODING_VIDEO_ENCODER" value="__ARCHIVER_ENCODING_VIDEO_ENCODER__" />
   <workingdirectory>%BASE%</workingdirectory>
   <log mode="roll-by-size">

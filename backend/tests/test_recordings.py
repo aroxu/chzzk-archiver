@@ -1,5 +1,6 @@
 import asyncio
 from pathlib import Path
+from types import SimpleNamespace
 
 from fastapi.testclient import TestClient
 
@@ -214,6 +215,55 @@ def test_live_recording_runs_streamlink_and_remuxes(monkeypatch, tmp_path):
     assert stored.started_at is not None
     assert Path(stored.path).read_bytes() == b"remuxed-mp4"
     assert stored.size == len(b"remuxed-mp4")
+
+
+def test_remote_vod_waits_for_faststart_file_and_allows_m4v_segments(monkeypatch, tmp_path):
+    calls = []
+    queued_paths = []
+
+    class FakeProcess:
+        returncode = 0
+
+        def __init__(self, args):
+            self.args = args
+
+        async def communicate(self):
+            Path(self.args[-1]).write_bytes(b"media")
+            return b"", b""
+
+    async def fake_subprocess(*args, **_kwargs):
+        calls.append(args)
+        return FakeProcess(args)
+
+    def fake_enqueue(_recording_id, source, **_kwargs):
+        assert Path(source).exists()
+        queued_paths.append(Path(source))
+        return SimpleNamespace(id=1)
+
+    monkeypatch.setattr(recorder.settings, "recordings_dir", tmp_path)
+    monkeypatch.setattr(recorder.settings, "encoding_mode", "remote")
+    monkeypatch.setattr(recorder.chzzk, "resolve_direct", lambda *_args: {
+        "protocol": "dash", "playback_url": "https://cdn.example/manifest.mpd", "total_size": 0,
+    })
+    monkeypatch.setattr(recorder.asyncio, "create_subprocess_exec", fake_subprocess)
+    monkeypatch.setattr(recorder, "enqueue_encoding", fake_enqueue)
+    monkeypatch.setattr(recorder, "generate_thumbnail", lambda _path: None)
+
+    channel = Channel.create(chzzk_id="vod:remote-channel", name="원격 VOD")
+    broadcast = Broadcast.create(
+        channel=channel.id,
+        broadcast_id="vod:remote-1",
+        source_type="vod",
+        source_url="https://chzzk.naver.com/video/123",
+        title="원격 VOD",
+    )
+    recording = Recording.create(broadcast=broadcast.id, state="queued")
+
+    asyncio.run(recorder.run_recording(recording.id))
+
+    assert calls[0][calls[0].index("-extension_picky") + 1] == "false"
+    assert queued_paths == [Path(Recording.get_by_id(recording.id).path)]
+    assert queued_paths[0].suffix == ".mp4"
 
 
 def test_cancelling_a_download_is_not_reported_as_failure(monkeypatch, tmp_path):

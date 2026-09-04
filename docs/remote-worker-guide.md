@@ -109,6 +109,10 @@ GPU 드라이버가 로그인 세션에서만 안정적이거나 관리자 권�
   -WinSW C:\tools\WinSW-x64.exe
 ```
 
+설치 스크립트는 현재 셸에서 FFmpeg의 절대 경로를 찾아 서비스 설정에 저장합니다. 자동 탐지가
+안 되는 환경에서는 `-FFmpeg C:\ffmpeg\bin\ffmpeg.exe`를 함께 지정하십시오. 서비스 계정은
+로그인 사용자의 PATH를 상속하지 않으므로 단순히 `ffmpeg`만 저장하면 시작 직후 종료될 수 있습니다.
+
 설정은 `%ProgramData%\CHZZKArchiveWorker` 아래에 저장되며 관리자와 SYSTEM만 읽을 수 있습니다.
 서비스 계정을 별도로 쓰려면 `-ServiceAccount`와 `-ServicePassword`를 추가하십시오. 네트워크 공유
 드라이브 문자는 서비스에서 보이지 않을 수 있지만, 이 워커는 네트워크 스트림을 사용하므로 공유
