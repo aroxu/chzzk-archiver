@@ -346,6 +346,58 @@ def test_remote_vod_waits_for_faststart_file_and_allows_m4v_segments(monkeypatch
     assert queued_paths[0].suffix == ".mp4"
 
 
+def test_hls_vod_uses_parallel_streamlink_segments(monkeypatch, tmp_path):
+    calls = []
+
+    class FakeProcess:
+        returncode = 0
+
+        def __init__(self, args, stdout):
+            self.args = args
+            self.stdout = stdout
+
+        async def communicate(self):
+            if hasattr(self.stdout, "write"):
+                self.stdout.write(b"parallel-hls")
+                self.stdout.flush()
+            else:
+                Path(self.args[-1]).write_bytes(b"remuxed")
+            await asyncio.sleep(0)
+            return b"", b""
+
+    async def fake_subprocess(*args, **kwargs):
+        calls.append(args)
+        return FakeProcess(args, kwargs.get("stdout"))
+
+    monkeypatch.setattr(recorder.settings, "recordings_dir", tmp_path)
+    monkeypatch.setattr(recorder.settings, "encoding_mode", "disabled")
+    monkeypatch.setattr(recorder.settings, "download_segment_threads", 10)
+    monkeypatch.setattr(recorder.chzzk, "resolve_direct", lambda *_args: {
+        "protocol": "hls",
+        "playback_url": "https://cdn.example/master.m3u8",
+        "total_size": 10_000,
+    })
+    monkeypatch.setattr(recorder.asyncio, "create_subprocess_exec", fake_subprocess)
+    monkeypatch.setattr(recorder, "generate_thumbnail", lambda _path: None)
+
+    channel = Channel.create(chzzk_id="vod:hls-channel", name="HLS VOD")
+    broadcast = Broadcast.create(
+        channel=channel.id,
+        broadcast_id="vod:hls-1",
+        source_type="vod",
+        source_url="https://chzzk.naver.com/video/2",
+        title="HLS VOD",
+    )
+    recording = Recording.create(broadcast=broadcast.id, state="queued")
+
+    asyncio.run(recorder.run_recording(recording.id))
+
+    assert calls[0][:3] == (recorder.sys.executable, "-m", "streamlink")
+    assert calls[0][calls[0].index("--stream-segment-threads") + 1] == "10"
+    assert calls[0][-2:] == ("hls://https://cdn.example/master.m3u8", "best")
+    assert Recording.get_by_id(recording.id).state == "completed"
+
+
 def test_cancelling_a_download_is_not_reported_as_failure(monkeypatch, tmp_path):
     """A user cancel must land in `canceled`, never in `failed`."""
     monkeypatch.setattr(recorder.settings, "recordings_dir", tmp_path)

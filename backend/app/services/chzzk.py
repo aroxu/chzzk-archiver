@@ -19,6 +19,7 @@ CONTENT_RE = re.compile(r"^https?://chzzk\.naver\.com/(?P<kind>live|video|clips)
 ISO_DURATION_RE = re.compile(
     r"^P(?:(?P<days>[\d.]+)D)?(?:T(?:(?P<hours>[\d.]+)H)?(?:(?P<minutes>[\d.]+)M)?(?:(?P<seconds>[\d.]+)S)?)?$"
 )
+HLS_ATTRIBUTE_RE = re.compile(r"([A-Z0-9-]+)=(\"[^\"]*\"|[^,]*)")
 
 LIVE_PROBE_FAILED = object()
 
@@ -135,6 +136,68 @@ def _mpd_estimated_size(data: bytes) -> int:
     return int(duration * (video_bitrate + audio_bitrate) / 8 * 1.08)
 
 
+def _hls_variant(data: bytes, manifest_url: str) -> tuple[str | None, int]:
+    """Pick the highest HLS rendition up to 1080p and return its bitrate."""
+    lines = data.decode(errors="replace").splitlines()
+    candidates: list[tuple[int, int, str]] = []
+    for index, line in enumerate(lines):
+        if not line.startswith("#EXT-X-STREAM-INF:"):
+            continue
+        attrs = {
+            key: value.strip('"')
+            for key, value in HLS_ATTRIBUTE_RE.findall(line.split(":", 1)[1])
+        }
+        resolution = attrs.get("RESOLUTION", "0x0").lower().split("x")
+        try:
+            height = int(resolution[-1])
+            bitrate = int(attrs.get("AVERAGE-BANDWIDTH") or attrs.get("BANDWIDTH") or 0)
+        except ValueError:
+            continue
+        uri = next(
+            (value.strip() for value in lines[index + 1 :] if value.strip() and not value.startswith("#")),
+            "",
+        )
+        if uri and (height == 0 or height <= 1080):
+            candidates.append((height, bitrate, urljoin(manifest_url, uri)))
+    if not candidates:
+        return None, 0
+    height, bitrate, uri = max(candidates, key=lambda item: (item[0], item[1]))
+    return uri, bitrate
+
+
+def _hls_duration(data: bytes) -> float:
+    duration = 0.0
+    for line in data.decode(errors="replace").splitlines():
+        if line.startswith("#EXTINF:"):
+            try:
+                duration += float(line.split(":", 1)[1].split(",", 1)[0])
+            except ValueError:
+                continue
+    return duration
+
+
+def _hls_estimated_size(
+    manifest_url: str, cookies: dict[str, str], headers: dict[str, str]
+) -> int:
+    """Estimate a VOD HLS transfer from rendition bitrate and segment duration."""
+    try:
+        master = httpx.get(
+            manifest_url, cookies=cookies, headers=headers, follow_redirects=True, timeout=20
+        )
+        master.raise_for_status()
+        media_url, bitrate = _hls_variant(master.content, str(master.url))
+        media = master
+        if media_url:
+            media = httpx.get(
+                media_url, cookies=cookies, headers=headers, follow_redirects=True, timeout=20
+            )
+            media.raise_for_status()
+        duration = _hls_duration(media.content)
+        return int(duration * bitrate / 8 * 1.05) if duration > 0 and bitrate > 0 else 0
+    except (httpx.HTTPError, ValueError):
+        return 0
+
+
 def resolve_direct(url: str, cookies: dict[str, str]) -> dict:
     kind, content_id, _ = parse_content_url(url)
     if kind == "vod":
@@ -178,10 +241,21 @@ def resolve_direct(url: str, cookies: dict[str, str]) -> dict:
                 follow_redirects=True,
                 timeout=20,
             )
-            total_size = int(head.headers.get("content-length") or 0)
+            # Some signed CDN endpoints accept ranges but omit Content-Length
+            # on HEAD. Keep the DASH bitrate estimate in that case so progress
+            # and ETA do not fall back to an endless "calculating" state.
+            head_size = int(head.headers.get("content-length") or 0)
+            if head_size:
+                total_size = head_size
     else:
         playback_url = _playback_from_json(content.get("liveRewindPlaybackJson") or content.get("playbackJson"))
         protocol = "hls" if playback_url else None
+        if playback_url:
+            total_size = _hls_estimated_size(
+                playback_url,
+                cookies,
+                {"User-Agent": "Mozilla/5.0", "Referer": url},
+            )
     if not playback_url:
         reason = "성인 인증이 필요합니다" if content.get("adult") else "재생 URL을 찾을 수 없습니다"
         raise RuntimeError(reason)

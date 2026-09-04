@@ -34,6 +34,18 @@ npm run dev
 
 테스트는 `.venv\Scripts\pytest`로 실행합니다. 녹화에는 PATH에 `ffmpeg`와 `streamlink`가 필요합니다.
 
+## VOD·클립 다운로드 가속
+
+HLS VOD는 최대 10개 세그먼트를 병렬로 받고, 직접 MP4 링크는 aria2로 최대 16개 범위를
+동시에 받습니다. HLS 서버가 파일 크기를 직접 주지 않아도 재생목록의 길이와 비트레이트로
+예상 용량을 계산하므로 다운로드 진행률과 남은 시간이 표시됩니다. CDN이나 회선에 부담을
+줄여야 한다면 `.env`에서 값을 낮출 수 있습니다.
+
+```dotenv
+ARCHIVER_DOWNLOAD_SEGMENT_THREADS=10
+ARCHIVER_DOWNLOAD_CONNECTIONS=16
+```
+
 ## HEVC 인코딩
 
 기본값은 `auto / quality 23 / preset auto`와 원본 오디오 복사입니다. `auto`는 짧은 시험

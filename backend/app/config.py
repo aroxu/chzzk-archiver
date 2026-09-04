@@ -21,6 +21,10 @@ class Settings(BaseSettings):
     live_probe_timeout: float = 3.0
     live_probe_retries: int = 10
     max_recordings: int = 2
+    # VOD/clip acceleration. Streamlink supports at most 10 segment workers;
+    # aria2 supports at most 16 connections to one origin.
+    download_segment_threads: int = 10
+    download_connections: int = 16
     encoding_mode: str = "local"
     # auto prefers a working GPU encoder and falls back to libx265.
     encoding_video_encoder: str = "auto"

@@ -5,7 +5,14 @@ import pytest
 from fastapi import HTTPException
 
 from app.services import chzzk
-from app.services.chzzk import _mpd_estimated_size, _playback_from_json, _progressive_from_mpd, parse_content_url
+from app.services.chzzk import (
+    _hls_duration,
+    _hls_variant,
+    _mpd_estimated_size,
+    _playback_from_json,
+    _progressive_from_mpd,
+    parse_content_url,
+)
 
 
 def test_manual_url_types():
@@ -51,6 +58,23 @@ def test_estimates_dash_size_from_duration_and_selected_bitrates():
       </Period>
     </MPD>'''
     assert _mpd_estimated_size(mpd) == 66_873_600
+
+
+def test_selects_hls_1080_variant_and_sums_segment_duration():
+    master = b'''#EXTM3U
+#EXT-X-STREAM-INF:BANDWIDTH=2000000,RESOLUTION=1280x720
+720/index.m3u8
+#EXT-X-STREAM-INF:AVERAGE-BANDWIDTH=4500000,BANDWIDTH=5000000,RESOLUTION=1920x1080
+1080/index.m3u8
+#EXT-X-STREAM-INF:BANDWIDTH=12000000,RESOLUTION=3840x2160
+2160/index.m3u8
+'''
+    assert _hls_variant(master, "https://cdn.example/master.m3u8") == (
+        "https://cdn.example/1080/index.m3u8",
+        4_500_000,
+    )
+    media = b"#EXTM3U\n#EXTINF:4.004,\na.ts\n#EXTINF:5.996,\nb.ts\n"
+    assert _hls_duration(media) == 10
 
 
 def test_channel_profile_parser_uses_canonical_metadata(monkeypatch):

@@ -6,6 +6,7 @@ import asyncio
 import re
 import shutil
 import subprocess
+import sys
 import time
 from contextlib import suppress
 from datetime import UTC, datetime
@@ -242,7 +243,11 @@ async def run_recording(recording_id: int) -> None:
                     if direct["protocol"] == "progressive":
                         try:
                             if shutil.which("aria2c"):
-                                logger.info("recording=%s using aria2c connections=8", recording_id)
+                                logger.info(
+                                    "recording=%s using aria2c connections=%s",
+                                    recording_id,
+                                    max(1, min(16, settings.download_connections)),
+                                )
                                 await download_progressive_aria2(
                                     direct["playback_url"], temp, cookies, url, recording_id, direct.get("total_size", 0)
                                 )
@@ -258,19 +263,37 @@ async def run_recording(recording_id: int) -> None:
                             continue
                     capture_total_size = int(direct.get("total_size") or 0)
                     temp.unlink(missing_ok=True)
-                    cookie_header = "; ".join(f"{key}={value}" for key, value in cookies.items())
-                    headers = f"Referer: {url}\r\nAccept: application/dash+xml,application/vnd.apple.mpegurl,*/*\r\n"
-                    if cookie_header:
-                        headers += f"Cookie: {cookie_header}\r\n"
-                    args = [
-                        "ffmpeg", "-y", "-loglevel", "warning", "-user_agent", "Mozilla/5.0",
-                        "-headers", headers,
-                        # CHZZK uses CMAF/fMP4 media with .m4v segment names. New
-                        # FFmpeg releases reject the extension/MIME mismatch by
-                        # default unless the HLS demuxer is put in compatibility mode.
-                        "-extension_picky", "false",
-                        "-i", direct["playback_url"], "-c", "copy", "-f", "mpegts", str(temp),
-                    ]
+                    if direct["protocol"] == "hls":
+                        segment_threads = max(1, min(10, settings.download_segment_threads))
+                        args = [
+                            sys.executable, "-m", "streamlink", "--stdout",
+                            "--stream-segment-threads", str(segment_threads),
+                            "--http-header", f"Referer={url}",
+                        ]
+                        for key, value in cookies.items():
+                            args += ["--http-cookie", f"{key}={value}"]
+                        args += [f"hls://{direct['playback_url']}", "best"]
+                        output_handle = temp.open("wb")
+                        stdout_target = output_handle
+                        logger.info(
+                            "recording=%s using Streamlink HLS segment_threads=%s",
+                            recording_id,
+                            segment_threads,
+                        )
+                    else:
+                        cookie_header = "; ".join(f"{key}={value}" for key, value in cookies.items())
+                        headers = f"Referer: {url}\r\nAccept: application/dash+xml,application/vnd.apple.mpegurl,*/*\r\n"
+                        if cookie_header:
+                            headers += f"Cookie: {cookie_header}\r\n"
+                        args = [
+                            "ffmpeg", "-y", "-loglevel", "warning", "-user_agent", "Mozilla/5.0",
+                            "-headers", headers,
+                            # CHZZK uses CMAF/fMP4 media with .m4v segment names. New
+                            # FFmpeg releases reject the extension/MIME mismatch by
+                            # default unless the HLS demuxer is put in compatibility mode.
+                            "-extension_picky", "false",
+                            "-i", direct["playback_url"], "-c", "copy", "-f", "mpegts", str(temp),
+                        ]
                 progress_task = None
                 try:
                     proc = await asyncio.create_subprocess_exec(*args, stdout=stdout_target, stderr=asyncio.subprocess.PIPE)
