@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+from contextlib import suppress
 from pathlib import Path
 
 HEVC_ENCODERS = ("hevc_nvenc", "hevc_qsv", "hevc_amf", "hevc_vaapi", "libx265")
@@ -192,6 +193,40 @@ def ffmpeg_stream_command(
     # equally streamable Matroska container.
     command[-1:-1] = ["-f", "matroska" if audio_mode == "flac24" else "mpegts"]
     return command
+
+
+def with_progress(command: list[str]) -> list[str]:
+    """Ask FFmpeg for machine-readable progress without changing its output."""
+    return [command[0], "-nostats", "-progress", "pipe:2", *command[1:]]
+
+
+def parse_ffmpeg_time(value: str) -> float | None:
+    """Convert FFmpeg's HH:MM:SS.microseconds progress timestamp to seconds."""
+    parts = value.strip().split(":")
+    if len(parts) != 3:
+        return None
+    with suppress(ValueError):
+        return float(parts[0]) * 3600 + float(parts[1]) * 60 + float(parts[2])
+    return None
+
+
+def probe_duration(path: Path, ffprobe: str = "ffprobe") -> float:
+    """Return media duration, or zero for an unfinished/live input."""
+    try:
+        result = subprocess.run(
+            [
+                ffprobe, "-v", "error", "-show_entries", "format=duration",
+                "-of", "default=noprint_wrappers=1:nokey=1", str(path),
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=30,
+        )
+        duration = float(result.stdout.strip())
+        return duration if duration > 0 else 0.0
+    except (OSError, ValueError, subprocess.TimeoutExpired):
+        return 0.0
 
 
 def probe_media(path: Path, ffprobe: str = "ffprobe") -> dict:

@@ -19,6 +19,8 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 from .encoding_commands import (
     detect_hevc_encoders,
     ffmpeg_stream_command,
+    parse_ffmpeg_time,
+    with_progress,
 )
 
 VERSION = "0.1.0"
@@ -74,7 +76,39 @@ def _feed_ffmpeg(stream, process: subprocess.Popen) -> None:
             process.stdin.close()
 
 
-def run_stream_job(job: dict, token: str, ffmpeg: str = "ffmpeg") -> None:
+def _read_ffmpeg_progress(stream, callback, errors: list[str]) -> None:
+    values: dict[str, str] = {}
+    for raw_line in iter(stream.readline, b""):
+        line = raw_line.decode(errors="replace").strip()
+        if "=" in line:
+            key, value = line.split("=", 1)
+            if key in {"out_time", "speed", "progress"}:
+                values[key] = value
+                if key == "progress" and callback:
+                    processed = parse_ffmpeg_time(values.get("out_time", ""))
+                    try:
+                        speed = float(values.get("speed", "0").rstrip("x"))
+                    except ValueError:
+                        speed = 0.0
+                    if processed is not None:
+                        try:
+                            callback(processed, speed)
+                        except Exception as exc:
+                            # Progress reporting is best-effort. Keep draining
+                            # stderr so a brief control-plane outage cannot
+                            # deadlock the media encode.
+                            errors.append(f"progress heartbeat failed: {exc}")
+                continue
+        errors.append(line)
+        del errors[:-50]
+
+
+def run_stream_job(
+    job: dict,
+    token: str,
+    ffmpeg: str = "ffmpeg",
+    progress_callback=None,
+) -> None:
     """Bridge one full-duplex TCP media stream through an FFmpeg process."""
     command = ffmpeg_stream_command(
         encoder=job["encoder"],
@@ -83,6 +117,7 @@ def run_stream_job(job: dict, token: str, ffmpeg: str = "ffmpeg") -> None:
         audio_mode=job["audio_mode"],
         ffmpeg=ffmpeg,
     )
+    command = with_progress(command)
     with socket.create_connection(
         (job["stream_host"], int(job["stream_port"])), timeout=15
     ) as connection:
@@ -105,17 +140,24 @@ def run_stream_job(job: dict, token: str, ffmpeg: str = "ffmpeg") -> None:
             bufsize=0,
         )
         feeder = threading.Thread(target=_feed_ffmpeg, args=(incoming, process), daemon=True)
+        errors: list[str] = []
+        progress_reader = threading.Thread(
+            target=_read_ffmpeg_progress,
+            args=(process.stderr, progress_callback, errors),
+            daemon=True,
+        )
         feeder.start()
+        progress_reader.start()
         try:
             while chunk := process.stdout.read(1024 * 1024):
                 connection.sendall(chunk)
             process.stdout.close()
             connection.shutdown(socket.SHUT_WR)
             feeder.join()
-            stderr = process.stderr.read().decode(errors="replace")
             returncode = process.wait()
+            progress_reader.join()
             if returncode != 0:
-                raise RuntimeError(stderr[-2000:] or f"ffmpeg exited with {returncode}")
+                raise RuntimeError("\n".join(errors)[-2000:] or f"ffmpeg exited with {returncode}")
         finally:
             if process.poll() is None:
                 process.terminate()
@@ -153,7 +195,28 @@ def lease_once(
     job = response.json()
     job["worker_id"] = worker_id
     try:
-        run_stream_job(job, token, ffmpeg)
+        heartbeat_url = urljoin(
+            server.rstrip("/") + "/", job["heartbeat_url"].lstrip("/")
+        )
+        last_reported = 0.0
+
+        def report_progress(processed_seconds: float, encoding_speed: float) -> None:
+            nonlocal last_reported
+            now = time.monotonic()
+            if now - last_reported < 1 and processed_seconds > 0:
+                return
+            last_reported = now
+            heartbeat = client.post(
+                heartbeat_url,
+                headers=headers(token, worker_id),
+                json={
+                    "processed_seconds": processed_seconds,
+                    "encoding_speed": encoding_speed,
+                },
+            )
+            heartbeat.raise_for_status()
+
+        run_stream_job(job, token, ffmpeg, report_progress)
         completed = client.post(
             urljoin(server.rstrip("/") + "/", job["complete_url"].lstrip("/")),
             headers=headers(token, worker_id),

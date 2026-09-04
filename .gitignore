@@ -17,4 +17,5 @@ dist/
 .build-venv*/
 .build-tools/
 *.spec
+*.log
 example_ignore/

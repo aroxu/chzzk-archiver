@@ -10,6 +10,7 @@ from peewee import (
     CharField,
     DateTimeField as _DateTimeField,
     ForeignKeyField,
+    FloatField,
     IntegerField,
     Model,
     TextField,
@@ -173,6 +174,11 @@ class EncodingJob(BaseModel):
     audio_mode = CharField(max_length=20, default="copy")
     output_extension = CharField(max_length=8, default=".mp4")
     source_path = TextField(null=True)
+    progress = FloatField(default=0)
+    processed_seconds = FloatField(default=0)
+    duration_seconds = FloatField(default=0)
+    encoding_speed = FloatField(default=0)
+    eta_seconds = IntegerField(null=True)
     attempts = IntegerField(default=0)
     lease_expires_at = DateTimeField(null=True, index=True)
     upload_path = TextField(null=True)

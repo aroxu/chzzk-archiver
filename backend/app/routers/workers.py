@@ -34,6 +34,11 @@ class WorkerFailure(BaseModel):
     error: str = Field(min_length=1, max_length=4000)
 
 
+class WorkerProgress(BaseModel):
+    processed_seconds: float | None = Field(default=None, ge=0)
+    encoding_speed: float | None = Field(default=None, ge=0)
+
+
 def worker_auth(
     authorization: Annotated[str | None, Header()] = None,
     x_worker_id: Annotated[str | None, Header()] = None,
@@ -97,8 +102,18 @@ def lease(
 
 
 @router.post("/jobs/{job_id}/heartbeat", status_code=204)
-def job_heartbeat(job_id: int, worker_id: str = Depends(worker_auth), _=Depends(db)):
-    if not heartbeat_job(job_id, worker_id):
+def job_heartbeat(
+    job_id: int,
+    body: WorkerProgress | None = None,
+    worker_id: str = Depends(worker_auth),
+    _=Depends(db),
+):
+    if not heartbeat_job(
+        job_id,
+        worker_id,
+        processed_seconds=body.processed_seconds if body else None,
+        encoding_speed=body.encoding_speed if body else None,
+    ):
         raise HTTPException(409, "작업 lease가 만료되었거나 취소되었습니다")
 
 

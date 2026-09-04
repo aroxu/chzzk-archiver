@@ -5,7 +5,13 @@ from pathlib import Path
 
 from fastapi.testclient import TestClient
 
-from app.encoding_commands import ffmpeg_encode_command, ffmpeg_stream_command, output_extension
+from app.encoding_commands import (
+    ffmpeg_encode_command,
+    ffmpeg_stream_command,
+    output_extension,
+    parse_ffmpeg_time,
+    with_progress,
+)
 from app.main import app
 from app.models import Broadcast, Channel, EncodingJob, Recording, WorkerNode
 from app.services import encoding
@@ -40,6 +46,43 @@ def test_codec_commands_use_crf_for_cpu_and_cqp_for_nvenc():
         "pipe:1",
     ]
     assert output_extension("flac24") == ".mkv"
+
+
+def test_ffmpeg_progress_helpers():
+    command = with_progress(["ffmpeg", "-i", "in.ts", "out.mp4"])
+    assert command[:4] == ["ffmpeg", "-nostats", "-progress", "pipe:2"]
+    assert parse_ffmpeg_time("01:02:03.500000") == 3723.5
+    assert parse_ffmpeg_time("N/A") is None
+
+
+def test_encoding_heartbeat_calculates_progress_and_eta(tmp_path):
+    source = tmp_path / "capture.ts"
+    source.write_bytes(b"transport")
+    recording = _recording(source)
+    worker = WorkerNode.create(id="progress-1", hostname="linux", platform="Linux")
+    job = EncodingJob.create(
+        recording=recording.id,
+        state="leased",
+        worker=worker.id,
+        duration_seconds=100,
+        lease_expires_at=datetime.now(UTC),
+    )
+
+    assert encoding.heartbeat_job(
+        job.id,
+        worker.id,
+        processed_seconds=25,
+        encoding_speed=2,
+    )
+    stored = EncodingJob.get_by_id(job.id)
+    assert stored.progress == 25
+    assert stored.processed_seconds == 25
+    assert stored.encoding_speed == 2
+    assert stored.eta_seconds == 37
+
+    EncodingJob.update(state="uploading").where(EncodingJob.id == job.id).execute()
+    assert encoding.heartbeat_job(job.id, worker.id, processed_seconds=30, encoding_speed=2)
+    assert EncodingJob.get_by_id(job.id).state == "uploading"
 
 
 def test_thumbnail_survives_missing_duration(monkeypatch, tmp_path):

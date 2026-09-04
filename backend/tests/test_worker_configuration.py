@@ -1,5 +1,7 @@
 """Remote worker environment and encoder policy tests."""
 
+from io import BytesIO
+
 from app import worker
 
 
@@ -32,3 +34,20 @@ def test_precomputed_encoders_are_reused_between_worker_polls(monkeypatch):
         ["hevc_nvenc"],
     )
     assert client.payload["encoders"] == ["hevc_nvenc"]
+
+
+def test_worker_reads_machine_progress_from_ffmpeg_stderr():
+    reports = []
+    errors = []
+    worker._read_ffmpeg_progress(
+        BytesIO(
+            b"frame=123\n"
+            b"out_time=00:02:07.800000\n"
+            b"speed=1.75x\n"
+            b"progress=continue\n"
+        ),
+        lambda processed, speed: reports.append((processed, speed)),
+        errors,
+    )
+    assert reports == [(127.8, 1.75)]
+    assert errors == ["frame=123"]

@@ -50,6 +50,10 @@ type Recording = {
   progress?: number;
   speed_bps: number;
   eta_seconds?: number;
+  encoding_progress?: number;
+  encoding_speed?: number;
+  encoding_eta_seconds?: number;
+  encoding_processed_seconds?: number;
   recorded_seconds: number;
   recording_active: boolean;
   created_at: string;
@@ -933,7 +937,9 @@ function RecordingGrid({ recordings, onPlay, canPurge = false }: {
                 <div>
                   <span>
                     {r.state === "processing"
-                      ? "HEVC 인코딩 중"
+                      ? r.encoding_progress != null && r.encoding_progress > 0
+                        ? `HEVC 인코딩 ${r.encoding_progress.toFixed(1)}%`
+                        : `HEVC 인코딩 중 · ${mediaTime(r.encoding_processed_seconds || 0)}`
                       : r.progress != null
                       ? `${r.progress.toFixed(1)}%`
                       : "연결 중"}
@@ -943,10 +949,25 @@ function RecordingGrid({ recordings, onPlay, canPurge = false }: {
                     {r.total_size ? ` / ${size(r.total_size)}` : ""}
                   </span>
                 </div>
-                <progress max="100" value={r.progress ?? 0} />
+                <progress
+                  max="100"
+                  value={r.state === "processing" ? r.encoding_progress ?? 0 : r.progress ?? 0}
+                />
                 <div className="download-eta">
-                  <span>{r.state === "processing" ? "원격 워커 처리 중" : speed(r.speed_bps)}</span>
-                  <span>{r.state === "processing" ? "완료 대기 중" : eta(r.eta_seconds)}</span>
+                  <span>
+                    {r.state === "processing"
+                      ? r.encoding_speed && r.encoding_speed > 0
+                        ? `${r.encoding_speed.toFixed(2)}x 속도`
+                        : "인코더 준비 중"
+                      : speed(r.speed_bps)}
+                  </span>
+                  <span>
+                    {r.state === "processing"
+                      ? r.encoding_eta_seconds != null
+                        ? eta(r.encoding_eta_seconds)
+                        : "남은 시간 계산 중"
+                      : eta(r.eta_seconds)}
+                  </span>
                 </div>
               </div>
             )}

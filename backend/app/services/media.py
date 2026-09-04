@@ -7,7 +7,7 @@ from contextlib import suppress
 from datetime import UTC, datetime
 from pathlib import Path
 
-from ..models import Recording, as_utc
+from ..models import EncodingJob, Recording, as_utc
 from .state import active_processes
 
 
@@ -69,6 +69,9 @@ def recording_json(r: Recording) -> dict:
     thumbnail = f"/api/thumbnails/{r.id}" if r.path and thumbnail_path(Path(r.path)).exists() else None
     broadcast = r.broadcast
     channel = broadcast.channel
+    encoding = None
+    if r.state == "processing":
+        encoding = EncodingJob.get_or_none(EncodingJob.recording == r.id)
     return {
         "id": r.id,
         "state": r.state,
@@ -82,6 +85,10 @@ def recording_json(r: Recording) -> dict:
         "progress": progress,
         "speed_bps": r.speed_bps,
         "eta_seconds": r.eta_seconds,
+        "encoding_progress": encoding.progress if encoding else None,
+        "encoding_speed": encoding.encoding_speed if encoding else None,
+        "encoding_eta_seconds": encoding.eta_seconds if encoding else None,
+        "encoding_processed_seconds": encoding.processed_seconds if encoding else None,
         "recorded_seconds": recorded_seconds,
         "recording_active": process_active,
         "created_at": as_utc(r.created_at),

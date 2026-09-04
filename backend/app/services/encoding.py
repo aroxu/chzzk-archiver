@@ -17,7 +17,10 @@ from ..encoding_commands import (
     detect_hevc_encoders,
     ffmpeg_encode_command,
     output_extension,
+    parse_ffmpeg_time,
+    probe_duration,
     probe_media,
+    with_progress,
 )
 from ..models import EncodingJob, Recording, WorkerNode
 from .media import generate_thumbnail, thumbnail_path
@@ -61,6 +64,11 @@ def enqueue_encoding(
             attempts=0,
             lease_expires_at=None,
             upload_path=None,
+            progress=0,
+            processed_seconds=0,
+            duration_seconds=0,
+            encoding_speed=0,
+            eta_seconds=None,
             error=None,
             started_at=None,
             finished_at=None,
@@ -108,6 +116,11 @@ def _requeue_expired(now: datetime) -> None:
             worker=None,
             lease_expires_at=None,
             upload_path=None,
+            progress=0 if next_state == "queued" else job.progress,
+            processed_seconds=0 if next_state == "queued" else job.processed_seconds,
+            duration_seconds=0 if next_state == "queued" else job.duration_seconds,
+            encoding_speed=0,
+            eta_seconds=None,
             error="worker lease expired" if next_state == "failed" else None,
             finished_at=now if next_state == "failed" else None,
         ).where(EncodingJob.id == job.id).execute()
@@ -144,18 +157,44 @@ def lease_job(worker: WorkerNode, encoders: list[str]) -> EncodingJob | None:
     return None
 
 
-def heartbeat_job(job_id: int, worker_id: str, state: str = "encoding") -> bool:
+def heartbeat_job(
+    job_id: int,
+    worker_id: str,
+    state: str = "encoding",
+    *,
+    processed_seconds: float | None = None,
+    encoding_speed: float | None = None,
+) -> bool:
     expires = datetime.now(UTC) + timedelta(seconds=max(30, settings.worker_lease_seconds))
     with session():
-        return bool(
-            EncodingJob.update(state=state, lease_expires_at=expires)
-            .where(
-                EncodingJob.id == job_id,
-                EncodingJob.worker == worker_id,
-                EncodingJob.state.in_(["leased", "encoding", "uploading"]),
-            )
-            .execute()
+        job = EncodingJob.get_or_none(
+            EncodingJob.id == job_id,
+            EncodingJob.worker == worker_id,
+            EncodingJob.state.in_(["leased", "encoding", "uploading"]),
         )
+        if not job:
+            return False
+        # A late progress heartbeat can race with the stream receiver marking
+        # the upload complete. Never move that terminal hand-off backwards.
+        values: dict = {
+            "state": "uploading" if job.state == "uploading" else state,
+            "lease_expires_at": expires,
+        }
+        if processed_seconds is not None:
+            duration = job.duration_seconds
+            if duration <= 0 and job.recording.state == "processing":
+                source = Path(job.source_path or job.recording.path)
+                duration = probe_duration(source)
+                values["duration_seconds"] = duration
+            processed = max(job.processed_seconds, processed_seconds)
+            speed = max(0.0, encoding_speed or 0.0)
+            values.update(processed_seconds=processed, encoding_speed=speed)
+            if duration > 0:
+                values["progress"] = min(99.9, processed / duration * 100)
+                values["eta_seconds"] = (
+                    max(0, int((duration - processed) / speed)) if speed > 0 else None
+                )
+        return bool(EncodingJob.update(**values).where(EncodingJob.id == job.id).execute())
 
 
 def upload_destination(job: EncodingJob) -> Path:
@@ -211,6 +250,11 @@ def fail_job(job_id: int, worker_id: str | None, error: str) -> None:
             worker=None,
             lease_expires_at=None,
             upload_path=None,
+            progress=job.progress if terminal else 0,
+            processed_seconds=job.processed_seconds if terminal else 0,
+            duration_seconds=job.duration_seconds if terminal else 0,
+            encoding_speed=0,
+            eta_seconds=None,
             error=error[-1000:],
             finished_at=datetime.now(UTC) if terminal else None,
         ).where(EncodingJob.id == job.id).execute()
@@ -260,6 +304,10 @@ def _install_output(job_id: int, encoded: Path) -> Path:
         with database.atomic():
             EncodingJob.update(
                 state="completed",
+                progress=100,
+                processed_seconds=EncodingJob.duration_seconds,
+                encoding_speed=0,
+                eta_seconds=0,
                 lease_expires_at=None,
                 upload_path=None,
                 error=None,
@@ -333,15 +381,44 @@ async def process_local_job(job_id: int) -> None:
                 preset=job.preset,
                 audio_mode=job.audio_mode,
             )
+            duration = await asyncio.to_thread(probe_duration, source)
+            EncodingJob.update(duration_seconds=duration).where(EncodingJob.id == job.id).execute()
+            command = with_progress(command)
         try:
             process = await asyncio.create_subprocess_exec(
                 *command, stdout=subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE
             )
             active_processes[job.recording_id] = process
-            _, stderr = await process.communicate()
+            progress_values: dict[str, str] = {}
+            stderr_lines: list[str] = []
+            assert process.stderr is not None
+            while line := await process.stderr.readline():
+                text = line.decode(errors="replace").strip()
+                if "=" in text:
+                    key, value = text.split("=", 1)
+                    if key in {"out_time", "speed", "progress"}:
+                        progress_values[key] = value
+                        if key == "progress":
+                            processed = parse_ffmpeg_time(progress_values.get("out_time", ""))
+                            speed_text = progress_values.get("speed", "0").rstrip("x")
+                            try:
+                                encode_speed = float(speed_text)
+                            except ValueError:
+                                encode_speed = 0.0
+                            if processed is not None:
+                                heartbeat_job(
+                                    job.id,
+                                    worker.id,
+                                    processed_seconds=processed,
+                                    encoding_speed=encode_speed,
+                                )
+                        continue
+                stderr_lines.append(text)
+                stderr_lines = stderr_lines[-50:]
+            await process.wait()
             active_processes.pop(job.recording_id, None)
             if process.returncode != 0:
-                raise RuntimeError(stderr.decode(errors="replace")[-1000:])
+                raise RuntimeError("\n".join(stderr_lines)[-1000:])
             await asyncio.to_thread(_install_output, job.id, encoded)
             logger.info("recording=%s encoded locally encoder=%s", job.recording_id, encoder)
         except Exception as exc:

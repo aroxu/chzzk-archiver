@@ -15,6 +15,11 @@ RECORDING_COLUMNS = {
 ENCODING_COLUMNS = {
     "source_path": "TEXT",
     "used_encoder": "VARCHAR(40)",
+    "progress": "REAL DEFAULT 0",
+    "processed_seconds": "REAL DEFAULT 0",
+    "duration_seconds": "REAL DEFAULT 0",
+    "encoding_speed": "REAL DEFAULT 0",
+    "eta_seconds": "INTEGER",
 }
 
 
