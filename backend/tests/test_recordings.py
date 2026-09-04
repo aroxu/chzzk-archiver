@@ -6,7 +6,7 @@ from fastapi.testclient import TestClient
 
 from app import lifecycle
 from app.main import app
-from app.models import Broadcast, Channel, Entitlement, Recording, Subscription, User
+from app.models import AuditLog, Broadcast, Channel, EncodingJob, Entitlement, Recording, Subscription, User
 from app.services import recorder
 from app.services.media import recording_json, thumbnail_path
 
@@ -112,6 +112,49 @@ def test_shared_recording_survives_one_user_deleting_it(tmp_path):
         assert viewer.delete(f"/api/recordings/{recording.id}").status_code == 204
     assert Recording.get_or_none(Recording.id == recording.id) is not None
     assert media.exists()
+
+
+def test_admin_can_permanently_delete_shared_archive(monkeypatch, tmp_path):
+    monkeypatch.setattr(recorder.settings, "recordings_dir", tmp_path)
+    media = tmp_path / "shared.mp4"
+    source = tmp_path / "shared.ts"
+    upload = tmp_path / ".shared.encoded.part.mp4"
+    for path in (media, source, upload):
+        path.write_bytes(b"video")
+    thumbnail_path(media).write_bytes(b"jpeg")
+
+    with TestClient(app) as client:
+        owner = client.post(
+            "/api/auth/setup", json={"username": "admin", "password": "secret"}
+        ).json()
+        viewer = User.create(username="viewer", password="unused")
+        recording = _fixture_recording(media, user_id=owner["id"])
+        Entitlement.create(user=viewer.id, recording=recording.id)
+        EncodingJob.create(
+            recording=recording.id,
+            state="failed",
+            source_path=str(source),
+            upload_path=str(upload),
+        )
+
+        assert client.delete(f"/api/admin/recordings/{recording.id}").status_code == 204
+
+    assert Recording.get_or_none(Recording.id == recording.id) is None
+    assert not Entitlement.select().where(Entitlement.recording == recording.id).exists()
+    assert not EncodingJob.select().where(EncodingJob.recording == recording.id).exists()
+    assert all(not path.exists() for path in (media, source, upload, thumbnail_path(media)))
+    assert AuditLog.get().action == "recording.purge"
+
+
+def test_admin_must_stop_active_archive_before_permanent_delete(tmp_path):
+    with TestClient(app) as client:
+        owner = client.post(
+            "/api/auth/setup", json={"username": "admin", "password": "secret"}
+        ).json()
+        recording = _fixture_recording(state="recording", user_id=owner["id"])
+        response = client.delete(f"/api/admin/recordings/{recording.id}")
+    assert response.status_code == 409
+    assert Recording.get_or_none(Recording.id == recording.id) is not None
 
 
 def test_monitor_deduplicates_shared_channel_recording(monkeypatch):

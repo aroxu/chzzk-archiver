@@ -21,6 +21,7 @@ import {
   Radio,
   Settings,
   Shield,
+  Trash2,
   Users,
   Video,
   Volume2,
@@ -342,7 +343,7 @@ function Shell({ user }: { user: User }) {
           ) : tab === "channels" ? (
             <Channels />
           ) : tab === "library" ? (
-            <Library onPlay={setPlaying} />
+            <Library user={user} onPlay={setPlaying} />
           ) : tab === "settings" ? (
             <SettingsPage />
           ) : (
@@ -389,7 +390,7 @@ function Dashboard({ user, onPlay }: { user: User; onPlay: (recording: Recording
           <h2>최근 기록</h2>
         </div>
       </section>
-      <RecordingGrid recordings={recs.slice(0, 6)} onPlay={onPlay} />
+      <RecordingGrid recordings={recs.slice(0, 6)} onPlay={onPlay} canPurge={user.role === "admin"} />
       {!recs.length && (
         <Empty text={`${user.username}님의 첫 기록을 기다리고 있어요.`} />
       )}
@@ -522,7 +523,7 @@ function Channels() {
   );
 }
 
-function Library({ onPlay }: { onPlay: (recording: Recording) => void }) {
+function Library({ user, onPlay }: { user: User; onPlay: (recording: Recording) => void }) {
   const qc = useQueryClient();
   const [url, setUrl] = useState("");
   const [message, setMessage] = useState("");
@@ -575,7 +576,7 @@ function Library({ onPlay }: { onPlay: (recording: Recording) => void }) {
         </div>
         <span>{data.length} ARCHIVES</span>
       </div>
-      <RecordingGrid recordings={data} onPlay={onPlay} />
+      <RecordingGrid recordings={data} onPlay={onPlay} canPurge={user.role === "admin"} />
       {!data.length && <Empty text="아직 보관된 영상이 없습니다." />}
     </>
   );
@@ -851,7 +852,11 @@ function PlayerModal({ recording, onClose }: { recording: Recording; onClose: ()
   );
 }
 
-function RecordingGrid({ recordings, onPlay }: { recordings: Recording[]; onPlay: (recording: Recording) => void }) {
+function RecordingGrid({ recordings, onPlay, canPurge = false }: {
+  recordings: Recording[];
+  onPlay: (recording: Recording) => void;
+  canPurge?: boolean;
+}) {
   const qc = useQueryClient();
   const cancel = async (r: Recording) => {
     if (
@@ -965,6 +970,20 @@ function RecordingGrid({ recordings, onPlay }: { recordings: Recording[]; onPlay
               >
                 내 기록에서 제거
               </button>
+              {canPurge && !IN_FLIGHT_STATES.has(r.state) && (
+                <button
+                  className="purge"
+                  onClick={async () => {
+                    if (confirm(`“${r.title}” 아카이브를 영구 삭제할까요?\n모든 사용자에게서 제거되며 영상 파일도 삭제됩니다.`)) {
+                      await api(`/api/admin/recordings/${r.id}`, { method: "DELETE" });
+                      qc.invalidateQueries({ queryKey: ["recordings"] });
+                      qc.invalidateQueries({ queryKey: ["admin"] });
+                    }
+                  }}
+                >
+                  <Trash2 size={13} /> 아카이브 삭제
+                </button>
+              )}
             </div>
           </div>
         </article>

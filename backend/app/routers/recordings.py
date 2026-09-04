@@ -8,10 +8,11 @@ from pathlib import Path
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 
-from ..db import db
+from ..config import settings
+from ..db import database, db
 from ..models import Broadcast, Channel, EncodingJob, Entitlement, Recording, Subscription, User
 from ..schemas import ManualDownloadBody
-from ..security import current_user
+from ..security import admin, audit, current_user
 from ..services import chzzk
 from ..services.credentials import user_cookies
 from ..services.media import recording_json, thumbnail_path
@@ -19,6 +20,38 @@ from ..services.recorder import ensure_recording, redact, run_recording
 from ..services.state import active_processes
 
 router = APIRouter()
+
+
+def _delete_artifact(path: Path) -> None:
+    """Delete only files contained by the configured recordings directory."""
+    root = settings.recordings_dir.resolve()
+    target = path.resolve()
+    if not target.is_relative_to(root):
+        raise RuntimeError(f"녹화 폴더 밖의 파일은 삭제할 수 없습니다: {target}")
+    target.unlink(missing_ok=True)
+
+
+def _purge_recording_files(rec: Recording, job: EncodingJob | None) -> None:
+    paths: set[Path] = set()
+    for value in (rec.path, job.source_path if job else None, job.upload_path if job else None):
+        if not value:
+            continue
+        media = Path(value)
+        paths.update(
+            {
+                media,
+                thumbnail_path(media),
+                Path(f"{media}.aria2"),
+                media.with_suffix(".mp4"),
+                media.with_suffix(".mkv"),
+            }
+        )
+    if job and rec.path:
+        source = Path(rec.path)
+        paths.add(source.with_name(f".{source.stem}.publish-{job.id}.mp4"))
+        paths.add(source.with_name(f".{source.stem}.local-{job.id}.part{job.output_extension}"))
+    for path in paths:
+        _delete_artifact(path)
 
 
 def entitled(user: User, rid: int) -> Recording:
@@ -126,6 +159,27 @@ def remove_recording(recording_id: int, user: User = Depends(current_user), _=De
             Path(rec.path).unlink(missing_ok=True)
             thumbnail_path(Path(rec.path)).unlink(missing_ok=True)
         rec.delete_instance()
+
+
+@router.delete("/api/admin/recordings/{recording_id}", status_code=204)
+def purge_recording(recording_id: int, user: User = Depends(admin), _=Depends(db)):
+    """Permanently remove one archive and every user's reference to it."""
+    rec = Recording.get_or_none(Recording.id == recording_id)
+    if not rec:
+        raise HTTPException(404, "아카이브를 찾을 수 없습니다")
+    if rec.state in {"queued", "recording", "processing"}:
+        raise HTTPException(409, "진행 중인 작업을 먼저 중단한 뒤 삭제하세요")
+    job = EncodingJob.get_or_none(EncodingJob.recording == recording_id)
+    try:
+        _purge_recording_files(rec, job)
+    except (OSError, RuntimeError) as exc:
+        raise HTTPException(409, f"아카이브 파일을 삭제할 수 없습니다: {exc}") from exc
+    title = rec.broadcast.title
+    with database.atomic():
+        Entitlement.delete().where(Entitlement.recording == recording_id).execute()
+        EncodingJob.delete().where(EncodingJob.recording == recording_id).execute()
+        Recording.delete().where(Recording.id == recording_id).execute()
+        audit(user.id, "recording.purge", recording_id=recording_id, title=title)
 
 
 @router.post("/api/recordings/{recording_id}/cancel", status_code=204)
