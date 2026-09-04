@@ -1,66 +1,93 @@
 param(
-    [string]$Python,
+    [string]$PythonVersion = "3.12",
     [string]$Venv = ".venv",
     [string]$Output = "dist\worker",
-    [string]$BuildVenv = ".build-venv-windows"
+    [string]$BuildVenv = ".build-venv-windows",
+    [string]$Uv
 )
 
 $ErrorActionPreference = "Stop"
 $workspace = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
+$venvPath = Join-Path $workspace $Venv
+$projectPython = Join-Path $venvPath "Scripts\python.exe"
 $outputPath = Join-Path $workspace $Output
 $buildVenvPath = Join-Path $workspace $BuildVenv
 $buildPython = Join-Path $buildVenvPath "Scripts\python.exe"
 $workPath = Join-Path $workspace "build\worker-windows"
 $specPath = Join-Path $workspace "build"
+$workerExe = Join-Path $outputPath "archiver-worker.exe"
+$toolsPath = Join-Path $workspace ".build-tools\uv"
 
-if ($Python) {
-    $requestedPython = if ([IO.Path]::IsPathRooted($Python)) {
-        $Python
-    } else {
-        Join-Path $workspace $Python
-    }
-    if (-not (Test-Path -LiteralPath $requestedPython)) {
-        throw "Python executable not found at '$requestedPython'."
-    }
-    $pythonPath = (Resolve-Path -LiteralPath $requestedPython).Path
-} else {
-    $venvPath = Join-Path $workspace $Venv
-    $pythonPath = Join-Path $venvPath "Scripts\python.exe"
-    if (-not (Test-Path -LiteralPath $pythonPath)) {
-        if (Test-Path -LiteralPath $venvPath) {
-            throw "'$venvPath' exists but is not a usable Windows virtual environment."
-        }
-        $bootstrap = $null
-        $bootstrapArgs = @()
-        foreach ($commandName in @("python3", "python", "py")) {
-            $candidate = Get-Command $commandName -ErrorAction SilentlyContinue |
-                Select-Object -First 1
-            if (-not $candidate) {
-                continue
-            }
-            $candidateArgs = if ($commandName -eq "py") { @("-3.12") } else { @() }
-            & $candidate.Source @candidateArgs -c `
-                "import sys; raise SystemExit(0 if sys.version_info >= (3, 12) else 1)"
-            if ($LASTEXITCODE -eq 0) {
-                $bootstrap = $candidate
-                $bootstrapArgs = $candidateArgs
-                break
-            }
-        }
-        if (-not $bootstrap) {
-            throw "Python 3.12 or newer is required. Install Python and run this script again."
-        }
-        Write-Host "Creating project virtual environment: $venvPath"
-        & $bootstrap.Source @bootstrapArgs -m venv $venvPath
-        if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $pythonPath)) {
-            throw "Failed to create '$venvPath'. Python 3.12 or newer is required."
-        }
+function Assert-NativeSuccess([string]$Message) {
+    if ($LASTEXITCODE -ne 0) {
+        throw $Message
     }
 }
 
-$supported = & $pythonPath -c "import sys; print(int(sys.version_info >= (3, 12)))"
-if ($LASTEXITCODE -ne 0 -or $supported.Trim() -ne "1") {
-    throw "Python 3.12 or newer is required: $pythonPath"
+function Resolve-UvExecutable {
+    if ($Uv) {
+        $requestedUv = if ([IO.Path]::IsPathRooted($Uv)) { $Uv } else { Join-Path $workspace $Uv }
+        if (-not (Test-Path -LiteralPath $requestedUv -PathType Leaf)) {
+            throw "uv executable not found at '$requestedUv'."
+        }
+        return (Resolve-Path -LiteralPath $requestedUv).Path
+    }
+
+    $installedUv = Get-Command uv -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($installedUv) {
+        return $installedUv.Source
+    }
+
+    $cachedUv = Join-Path $toolsPath "uv.exe"
+    if (Test-Path -LiteralPath $cachedUv -PathType Leaf) {
+        return $cachedUv
+    }
+
+    $target = switch ([System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture) {
+        "X64" { "x86_64-pc-windows-msvc" }
+        "Arm64" { "aarch64-pc-windows-msvc" }
+        default { throw "Unsupported Windows architecture: $($_)" }
+    }
+    $archiveName = "uv-$target.zip"
+    $baseUrl = "https://github.com/astral-sh/uv/releases/latest/download/$archiveName"
+    $archive = Join-Path $toolsPath $archiveName
+    $checksum = "$archive.sha256"
+
+    New-Item -ItemType Directory -Force -Path $toolsPath | Out-Null
+    Write-Host "uv is not installed; downloading the standalone $target build..."
+    Invoke-WebRequest -Uri $baseUrl -OutFile $archive
+    Invoke-WebRequest -Uri "$baseUrl.sha256" -OutFile $checksum
+
+    $expectedHash = ((Get-Content -LiteralPath $checksum -Raw).Trim() -split "\s+")[0]
+    $actualHash = (Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash
+    if (-not $expectedHash -or $actualHash -ine $expectedHash) {
+        Remove-Item -LiteralPath $archive, $checksum -Force -ErrorAction SilentlyContinue
+        throw "uv download checksum verification failed."
+    }
+
+    Expand-Archive -LiteralPath $archive -DestinationPath $toolsPath -Force
+    Remove-Item -LiteralPath $archive, $checksum -Force
+    if (-not (Test-Path -LiteralPath $cachedUv -PathType Leaf)) {
+        throw "Downloaded uv archive did not contain uv.exe."
+    }
+    return $cachedUv
+}
+
+$uvExe = Resolve-UvExecutable
+Write-Host "Build runtime: uv-managed Python $PythonVersion"
+
+$projectVenvReady = $false
+if (Test-Path -LiteralPath $projectPython -PathType Leaf) {
+    & $projectPython -c "import sys; raise SystemExit(0 if sys.version_info[:2] == tuple(map(int, '$PythonVersion'.split('.')[:2])) else 1)" 2>$null
+    $projectVenvReady = $LASTEXITCODE -eq 0
+}
+if (-not $projectVenvReady) {
+    Write-Host "Creating project virtual environment: $venvPath"
+    & $uvExe venv --clear --python $PythonVersion --managed-python $venvPath
+    Assert-NativeSuccess "Failed to create project virtual environment with Python $PythonVersion."
+    if (-not (Test-Path -LiteralPath $projectPython -PathType Leaf)) {
+        throw "uv did not create the expected Python executable: $projectPython"
+    }
 }
 
 New-Item -ItemType Directory -Force -Path $outputPath, $workPath, $specPath | Out-Null
@@ -68,13 +95,23 @@ New-Item -ItemType Directory -Force -Path $outputPath, $workPath, $specPath | Ou
 if (Test-Path -LiteralPath $buildVenvPath) {
     Remove-Item -LiteralPath $buildVenvPath -Recurse -Force
 }
+if (Test-Path -LiteralPath $workerExe) {
+    # Never leave a stale executable that could be mistaken for this build.
+    Remove-Item -LiteralPath $workerExe -Force
+}
 
 try {
-    # Build in an isolated environment and install the project itself. Merely
-    # installing PyInstaller can produce an EXE that starts successfully on the
-    # build machine but is missing httpx/pydantic-settings on a clean host.
-    & $pythonPath -m venv $buildVenvPath
-    & $buildPython -m pip install --disable-pip-version-check $workspace pyinstaller
+    # Always use a uv-managed runtime. The installed system Python (or its absence)
+    # cannot affect dependency resolution or the resulting executable.
+    & $uvExe venv --python $PythonVersion --managed-python $buildVenvPath
+    Assert-NativeSuccess "Failed to create isolated build environment with Python $PythonVersion."
+    if (-not (Test-Path -LiteralPath $buildPython -PathType Leaf)) {
+        throw "uv did not create the expected build Python: $buildPython"
+    }
+
+    & $uvExe pip install --python $buildPython $workspace pyinstaller
+    Assert-NativeSuccess "Failed to install worker runtime dependencies."
+
     & $buildPython -m PyInstaller `
         --noconfirm `
         --clean `
@@ -85,11 +122,16 @@ try {
         --workpath $workPath `
         --specpath $specPath `
         (Join-Path $workspace "backend\worker_entry.py")
+    Assert-NativeSuccess "PyInstaller failed to build the worker."
+    if (-not (Test-Path -LiteralPath $workerExe -PathType Leaf)) {
+        throw "PyInstaller did not create: $workerExe"
+    }
 } finally {
     if (Test-Path -LiteralPath $buildVenvPath) {
         Remove-Item -LiteralPath $buildVenvPath -Recurse -Force
     }
 }
 
-Write-Host "Worker binary: $outputPath\archiver-worker.exe"
-& (Join-Path $outputPath "archiver-worker.exe") --doctor
+Write-Host "Worker binary: $workerExe"
+& $workerExe --doctor
+Assert-NativeSuccess "The built worker failed its self-test: $workerExe"

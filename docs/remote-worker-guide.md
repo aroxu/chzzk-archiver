@@ -75,9 +75,10 @@ FFmpeg가 인코더 이름만 나열하는 것으로는 충분하지 않아, 워
 .\dist\worker\archiver-worker.exe --doctor
 ```
 
-Python 3.12 이상만 설치되어 있으면 됩니다. `.venv`가 없는 새 환경에서는 빌드 스크립트가
-`python3`, `python`, Windows Python Launcher(`py`) 순서로 Python을 찾아 `.venv`를 자동 생성하고
-전체 런타임 의존성을 격리된 빌드 환경에 설치합니다. `uv`나 수동 가상환경 준비는 필요 없습니다.
+설치된 Python의 유무와 버전은 상관없습니다. 빌드 스크립트가 `uv`로 고정된 Python 3.12를
+준비하고 `.venv`와 격리된 빌드 환경을 자동 생성합니다. `uv`도 없다면 공식 Windows 실행 파일을
+다운로드하고 SHA-256 체크섬을 검증한 뒤 프로젝트 내부에 캐시합니다. Python, `uv`, 가상환경을
+수동으로 준비할 필요가 없습니다. 최초 실행에는 런타임 다운로드를 위한 인터넷 연결이 필요합니다.
 
 생성된 `dist\worker\archiver-worker.exe`와 FFmpeg가 필요합니다. FFmpeg가 PATH에 없다면
 `ARCHIVER_WORKER_FFMPEG=C:\ffmpeg\bin\ffmpeg.exe`로 지정합니다.

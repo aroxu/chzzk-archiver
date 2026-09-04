@@ -15,5 +15,6 @@ extension/dist/
 build/
 dist/
 .build-venv*/
+.build-tools/
 *.spec
 example_ignore/

@@ -84,10 +84,10 @@ archiver-worker
 인코더가 실제 시험 인코딩에 실패하면 워커는 작업을 받지 않고 오류를 출력합니다. `auto`는
 NVENC/QSV/AMF/VAAPI를 실제로 시험한 뒤 가능한 GPU를 고르고, 마지막으로 libx265를 사용합니다.
 
-Windows 단일 실행 파일은 `scripts/build-worker.ps1`로 생성됩니다. Python 3.12 이상만 설치되어
-있으면 스크립트가 첫 실행 시 프로젝트의 `.venv`를 자동 생성하고 필요한 패키지를 설치합니다.
-수동으로 `python -m venv .venv`를 먼저 실행할 필요는 없습니다. 결과는
-`dist/worker/archiver-worker.exe`입니다.
+Windows 단일 실행 파일은 `scripts/build-worker.ps1`로 생성됩니다. 설치된 Python의 유무와 버전에
+상관없이 스크립트가 고정된 Python 3.12 런타임과 프로젝트의 `.venv`를 자동 준비합니다. `uv`가
+없으면 공식 Windows 실행 파일을 내려받고 SHA-256 체크섬을 검증한 뒤 캐시합니다. 따라서 Python,
+`uv`, 가상환경을 수동으로 준비할 필요가 없습니다. 결과는 `dist/worker/archiver-worker.exe`입니다.
 
 ```powershell
 .\scripts\build-worker.ps1
