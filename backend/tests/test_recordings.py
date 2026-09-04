@@ -260,6 +260,36 @@ def test_live_recording_runs_streamlink_and_remuxes(monkeypatch, tmp_path):
     assert stored.size == len(b"remuxed-mp4")
 
 
+def test_segmented_capture_reports_estimated_eta(monkeypatch, tmp_path):
+    media = tmp_path / "growing.ts"
+    media.write_bytes(b"")
+    recording = _fixture_recording(media, state="recording")
+
+    class FakeProcess:
+        returncode = None
+
+    process = FakeProcess()
+    writes = iter((1000, 2000))
+    real_sleep = asyncio.sleep
+
+    async def fake_sleep(_seconds):
+        await real_sleep(0.01)
+        length = next(writes)
+        media.write_bytes(b"x" * length)
+        if length == 2000:
+            process.returncode = 0
+
+    monkeypatch.setattr(recorder.asyncio, "sleep", fake_sleep)
+
+    asyncio.run(recorder.monitor_live_progress(recording.id, media, process, total_size=4000))
+
+    stored = Recording.get_by_id(recording.id)
+    assert stored.total_size == 4000
+    assert stored.size == 2000
+    assert stored.speed_bps > 0
+    assert stored.eta_seconds is not None
+
+
 def test_remote_vod_waits_for_faststart_file_and_allows_m4v_segments(monkeypatch, tmp_path):
     calls = []
     queued_paths = []
@@ -285,7 +315,7 @@ def test_remote_vod_waits_for_faststart_file_and_allows_m4v_segments(monkeypatch
         queued_paths.append(Path(source))
         return SimpleNamespace(id=1)
 
-    async def fake_monitor(_recording_id, path, _process):
+    async def fake_monitor(_recording_id, path, _process, total_size=0):
         monitored_paths.append(Path(path))
 
     monkeypatch.setattr(recorder.settings, "recordings_dir", tmp_path)

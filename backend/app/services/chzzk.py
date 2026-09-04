@@ -16,6 +16,9 @@ from fastapi import HTTPException
 from ..config import logger, settings
 
 CONTENT_RE = re.compile(r"^https?://chzzk\.naver\.com/(?P<kind>live|video|clips)/(?P<id>[^/?#]+)")
+ISO_DURATION_RE = re.compile(
+    r"^P(?:(?P<days>[\d.]+)D)?(?:T(?:(?P<hours>[\d.]+)H)?(?:(?P<minutes>[\d.]+)M)?(?:(?P<seconds>[\d.]+)S)?)?$"
+)
 
 LIVE_PROBE_FAILED = object()
 
@@ -83,6 +86,55 @@ def _progressive_from_mpd(data: bytes, manifest_url: str) -> str | None:
     return max(candidates, default=(0, ""), key=lambda item: item[0])[1] or None
 
 
+def _mpd_estimated_size(data: bytes) -> int:
+    """Estimate selected A/V bytes from DASH duration and representation bitrates."""
+    root = ET.fromstring(data)
+    duration_text = root.attrib.get("mediaPresentationDuration", "")
+    if not duration_text:
+        period = next((node for node in root.iter() if node.tag.rsplit("}", 1)[-1] == "Period"), None)
+        duration_text = period.attrib.get("duration", "") if period is not None else ""
+    match = ISO_DURATION_RE.match(duration_text)
+    if not match:
+        return 0
+    values = {key: float(value or 0) for key, value in match.groupdict().items()}
+    duration = (
+        values["days"] * 86400
+        + values["hours"] * 3600
+        + values["minutes"] * 60
+        + values["seconds"]
+    )
+    if duration <= 0:
+        return 0
+
+    videos: list[tuple[int, int]] = []
+    audios: list[int] = []
+    for adaptation in root.iter():
+        if adaptation.tag.rsplit("}", 1)[-1] != "AdaptationSet":
+            continue
+        inherited_mime = adaptation.attrib.get("mimeType", "")
+        inherited_type = adaptation.attrib.get("contentType", "")
+        for representation in adaptation:
+            if representation.tag.rsplit("}", 1)[-1] != "Representation":
+                continue
+            bitrate = int(representation.attrib.get("bandwidth") or 0)
+            if bitrate <= 0:
+                continue
+            mime = representation.attrib.get("mimeType", inherited_mime)
+            content_type = representation.attrib.get("contentType", inherited_type)
+            height = int(representation.attrib.get("height") or 0)
+            if content_type == "audio" or mime.startswith("audio/"):
+                audios.append(bitrate)
+            elif content_type == "video" or mime.startswith("video/") or height:
+                if not height or height <= 1080:
+                    videos.append((height, bitrate))
+    if not videos:
+        return 0
+    video_bitrate = max(videos, key=lambda item: (item[0], item[1]))[1]
+    audio_bitrate = max(audios, default=0)
+    # The staging file is MPEG-TS, which is slightly larger than DASH fMP4.
+    return int(duration * (video_bitrate + audio_bitrate) / 8 * 1.08)
+
+
 def resolve_direct(url: str, cookies: dict[str, str]) -> dict:
     kind, content_id, _ = parse_content_url(url)
     if kind == "vod":
@@ -114,6 +166,7 @@ def resolve_direct(url: str, cookies: dict[str, str]) -> dict:
             timeout=20,
         )
         manifest.raise_for_status()
+        total_size = _mpd_estimated_size(manifest.content)
         progressive = _progressive_from_mpd(manifest.content, str(manifest.url))
         if progressive:
             playback_url = progressive
@@ -141,7 +194,7 @@ def resolve_direct(url: str, cookies: dict[str, str]) -> dict:
         "thumbnail": content.get("thumbnailImageUrl"),
         "playback_url": playback_url,
         "protocol": protocol,
-        "total_size": total_size if protocol == "progressive" else 0,
+        "total_size": total_size,
     }
 
 

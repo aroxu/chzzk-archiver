@@ -5,7 +5,7 @@ import pytest
 from fastapi import HTTPException
 
 from app.services import chzzk
-from app.services.chzzk import _playback_from_json, _progressive_from_mpd, parse_content_url
+from app.services.chzzk import _mpd_estimated_size, _playback_from_json, _progressive_from_mpd, parse_content_url
 
 
 def test_manual_url_types():
@@ -35,6 +35,22 @@ def test_selects_highest_progressive_mp4_up_to_1080p():
       <Representation mimeType="video/mp4" codecs="avc1,mp4a" height="2160"><BaseURL>2160.mp4</BaseURL></Representation>
     </AdaptationSet></Period></MPD>'''
     assert _progressive_from_mpd(mpd, "https://cdn.example/path/manifest.mpd") == "https://cdn.example/path/1080.mp4"
+
+
+def test_estimates_dash_size_from_duration_and_selected_bitrates():
+    mpd = b'''<MPD xmlns="urn:mpeg:dash:schema:mpd:2011" mediaPresentationDuration="PT2M">
+      <Period>
+        <AdaptationSet mimeType="video/mp4">
+          <Representation height="720" bandwidth="2000000" />
+          <Representation height="1080" bandwidth="4000000" />
+          <Representation height="2160" bandwidth="9000000" />
+        </AdaptationSet>
+        <AdaptationSet mimeType="audio/mp4">
+          <Representation bandwidth="128000" />
+        </AdaptationSet>
+      </Period>
+    </MPD>'''
+    assert _mpd_estimated_size(mpd) == 66_873_600
 
 
 def test_channel_profile_parser_uses_canonical_metadata(monkeypatch):

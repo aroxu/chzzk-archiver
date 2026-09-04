@@ -79,7 +79,12 @@ def ensure_recording(
     return recording, created
 
 
-async def monitor_live_progress(recording_id: int, path: Path, process: asyncio.subprocess.Process) -> None:
+async def monitor_live_progress(
+    recording_id: int,
+    path: Path,
+    process: asyncio.subprocess.Process,
+    total_size: int = 0,
+) -> None:
     """Track file growth for live and FFmpeg-based segmented captures."""
     previous_size = path.stat().st_size if path.exists() else 0
     previous_at = time.monotonic()
@@ -96,12 +101,18 @@ async def monitor_live_progress(recording_id: int, path: Path, process: asyncio.
             last_growth_at = now
         average_speed = max(0, current_size - monitor_start_size) / max(0.001, now - monitor_started_at)
         recently_writing = last_growth_at is not None and now - last_growth_at <= 15
+        eta_seconds = (
+            max(0, int((total_size - current_size) / average_speed))
+            if total_size and average_speed > 0
+            else None
+        )
         with session():
             updated = (
                 Recording.update(
                     size=current_size,
+                    total_size=total_size if total_size else Recording.total_size,
                     speed_bps=int(average_speed) if recently_writing else 0,
-                    eta_seconds=None,
+                    eta_seconds=eta_seconds if recently_writing else None,
                 )
                 .where(Recording.id == recording_id, Recording.state == "recording")
                 .execute()
@@ -210,6 +221,7 @@ async def run_recording(recording_id: int) -> None:
         try:
             errors: list[str] = []
             for cookies in cookie_candidates:
+                capture_total_size = 0
                 output_handle = None
                 stdout_target = subprocess.DEVNULL
                 if source_type == "live":
@@ -244,6 +256,7 @@ async def run_recording(recording_id: int) -> None:
                         except Exception as exc:
                             errors.append(str(exc))
                             continue
+                    capture_total_size = int(direct.get("total_size") or 0)
                     temp.unlink(missing_ok=True)
                     cookie_header = "; ".join(f"{key}={value}" for key, value in cookies.items())
                     headers = f"Referer: {url}\r\nAccept: application/dash+xml,application/vnd.apple.mpegurl,*/*\r\n"
@@ -266,7 +279,7 @@ async def run_recording(recording_id: int) -> None:
                     # write a growing transport stream. Progressive HTTP/aria2
                     # downloads report their own byte counters and break above.
                     progress_task = asyncio.create_task(
-                        monitor_live_progress(recording_id, temp, proc)
+                        monitor_live_progress(recording_id, temp, proc, capture_total_size)
                     )
                     _, err = await proc.communicate()
                 finally:
