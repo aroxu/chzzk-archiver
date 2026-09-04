@@ -80,7 +80,7 @@ def ensure_recording(
 
 
 async def monitor_live_progress(recording_id: int, path: Path, process: asyncio.subprocess.Process) -> None:
-    """Track file growth for live captures where no total size is known."""
+    """Track file growth for live and FFmpeg-based segmented captures."""
     previous_size = path.stat().st_size if path.exists() else 0
     previous_at = time.monotonic()
     monitor_start_size = previous_size
@@ -262,8 +262,12 @@ async def run_recording(recording_id: int) -> None:
                 try:
                     proc = await asyncio.create_subprocess_exec(*args, stdout=stdout_target, stderr=asyncio.subprocess.PIPE)
                     active_processes[recording_id] = proc
-                    if source_type == "live":
-                        progress_task = asyncio.create_task(monitor_live_progress(recording_id, temp, proc))
+                    # Both Streamlink live captures and FFmpeg DASH/HLS captures
+                    # write a growing transport stream. Progressive HTTP/aria2
+                    # downloads report their own byte counters and break above.
+                    progress_task = asyncio.create_task(
+                        monitor_live_progress(recording_id, temp, proc)
+                    )
                     _, err = await proc.communicate()
                 finally:
                     active_processes.pop(recording_id, None)

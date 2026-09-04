@@ -263,6 +263,7 @@ def test_live_recording_runs_streamlink_and_remuxes(monkeypatch, tmp_path):
 def test_remote_vod_waits_for_faststart_file_and_allows_m4v_segments(monkeypatch, tmp_path):
     calls = []
     queued_paths = []
+    monitored_paths = []
 
     class FakeProcess:
         returncode = 0
@@ -272,6 +273,7 @@ def test_remote_vod_waits_for_faststart_file_and_allows_m4v_segments(monkeypatch
 
         async def communicate(self):
             Path(self.args[-1]).write_bytes(b"media")
+            await asyncio.sleep(0)
             return b"", b""
 
     async def fake_subprocess(*args, **_kwargs):
@@ -283,12 +285,16 @@ def test_remote_vod_waits_for_faststart_file_and_allows_m4v_segments(monkeypatch
         queued_paths.append(Path(source))
         return SimpleNamespace(id=1)
 
+    async def fake_monitor(_recording_id, path, _process):
+        monitored_paths.append(Path(path))
+
     monkeypatch.setattr(recorder.settings, "recordings_dir", tmp_path)
     monkeypatch.setattr(recorder.settings, "encoding_mode", "remote")
     monkeypatch.setattr(recorder.chzzk, "resolve_direct", lambda *_args: {
         "protocol": "dash", "playback_url": "https://cdn.example/manifest.mpd", "total_size": 0,
     })
     monkeypatch.setattr(recorder.asyncio, "create_subprocess_exec", fake_subprocess)
+    monkeypatch.setattr(recorder, "monitor_live_progress", fake_monitor)
     monkeypatch.setattr(recorder, "enqueue_encoding", fake_enqueue)
     monkeypatch.setattr(recorder, "generate_thumbnail", lambda _path: None)
 
@@ -305,6 +311,7 @@ def test_remote_vod_waits_for_faststart_file_and_allows_m4v_segments(monkeypatch
     asyncio.run(recorder.run_recording(recording.id))
 
     assert calls[0][calls[0].index("-extension_picky") + 1] == "false"
+    assert monitored_paths and monitored_paths[0].suffix == ".ts"
     assert queued_paths == [Path(Recording.get_by_id(recording.id).path)]
     assert queued_paths[0].suffix == ".mp4"
 

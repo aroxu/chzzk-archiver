@@ -945,8 +945,8 @@ function RecordingGrid({ recordings, onPlay, canPurge = false }: {
                 </div>
                 <progress max="100" value={r.progress ?? 0} />
                 <div className="download-eta">
-                  <span>{speed(r.speed_bps)}</span>
-                  <span>{eta(r.eta_seconds)}</span>
+                  <span>{r.state === "processing" ? "원격 워커 처리 중" : speed(r.speed_bps)}</span>
+                  <span>{r.state === "processing" ? "완료 대기 중" : eta(r.eta_seconds)}</span>
                 </div>
               </div>
             )}
