@@ -89,6 +89,7 @@ def recording_json(r: Recording) -> dict:
         "encoding_speed": encoding.encoding_speed if encoding else None,
         "encoding_eta_seconds": encoding.eta_seconds if encoding else None,
         "encoding_processed_seconds": encoding.processed_seconds if encoding else None,
+        "encoding_state": encoding.state if encoding else None,
         "recorded_seconds": recorded_seconds,
         "duration_seconds": max(0, float(r.duration_seconds or 0)),
         "recording_active": process_active,

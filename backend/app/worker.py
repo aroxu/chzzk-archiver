@@ -11,7 +11,7 @@ import sys
 import threading
 import time
 import uuid
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlparse
 
 import httpx
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -24,6 +24,21 @@ from .encoding_commands import (
 )
 
 VERSION = "0.1.0"
+
+
+def normalize_server_url(server: str) -> str:
+    """Accept the hostname-only form commonly used in service configs."""
+    value = server.strip().rstrip("/")
+    if not value:
+        raise ValueError("컨트롤러 주소가 비어 있습니다")
+    if "://" not in value:
+        host = value.split("/", 1)[0].split(":", 1)[0].lower()
+        scheme = "http" if host in {"localhost", "127.0.0.1", "::1"} else "https"
+        value = f"{scheme}://{value}"
+    parsed = urlparse(value)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise ValueError(f"올바르지 않은 컨트롤러 주소입니다: {server}")
+    return value
 
 
 class WorkerSettings(BaseSettings):
@@ -217,12 +232,6 @@ def lease_once(
             heartbeat.raise_for_status()
 
         run_stream_job(job, token, ffmpeg, report_progress)
-        completed = client.post(
-            urljoin(server.rstrip("/") + "/", job["complete_url"].lstrip("/")),
-            headers=headers(token, worker_id),
-            timeout=120,
-        )
-        completed.raise_for_status()
     except Exception as exc:
         with __import__("contextlib").suppress(Exception):
             client.post(
@@ -231,6 +240,15 @@ def lease_once(
                 json={"error": str(exc)[-4000:]},
             )
         raise
+    # Once the TCP upload has reached EOF, the result belongs to the
+    # controller.  A lost/late acknowledgement must never call /fail because
+    # that endpoint is allowed to delete the uploaded file.
+    completed = client.post(
+        urljoin(server.rstrip("/") + "/", job["complete_url"].lstrip("/")),
+        headers=headers(token, worker_id),
+        timeout=120,
+    )
+    completed.raise_for_status()
     return True
 
 
@@ -254,6 +272,7 @@ def doctor(
         return 1
     if server and token:
         try:
+            server = normalize_server_url(server)
             response = httpx.get(urljoin(server.rstrip("/") + "/", "health/live"), timeout=5)
             response.raise_for_status()
             print(f"controller: {response.status_code}")
@@ -283,6 +302,10 @@ def main() -> int:
         return doctor(args.server, args.token, args.ffmpeg, args.encoder)
     if not args.server or not args.token:
         parser.error("--server and --token (or matching environment variables) are required")
+    try:
+        args.server = normalize_server_url(args.server)
+    except ValueError as exc:
+        parser.error(str(exc))
     try:
         encoders = configured_encoders(detect_hevc_encoders(args.ffmpeg), args.encoder)
     except ValueError as exc:

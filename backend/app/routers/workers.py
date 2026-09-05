@@ -17,6 +17,7 @@ from ..services.encoding import (
     heartbeat_job,
     lease_job,
     register_worker,
+    uploaded_job_status,
 )
 
 router = APIRouter(prefix="/api/worker", tags=["worker"])
@@ -57,7 +58,7 @@ def assigned_job(job_id: int, worker_id: str) -> EncodingJob:
     job = EncodingJob.get_or_none(
         EncodingJob.id == job_id,
         EncodingJob.worker == worker_id,
-        EncodingJob.state.in_(["leased", "encoding", "uploading"]),
+        EncodingJob.state.in_(["leased", "encoding", "uploading", "finalizing"]),
     )
     if not job:
         raise HTTPException(409, "작업 lease가 만료되었거나 취소되었습니다")
@@ -119,9 +120,17 @@ def job_heartbeat(
 
 @router.post("/jobs/{job_id}/complete")
 async def job_complete(job_id: int, worker_id: str = Depends(worker_auth), _=Depends(db)):
+    state = uploaded_job_status(job_id, worker_id)
+    if state == "completed":
+        return {"status": "completed"}
+    if state == "finalizing":
+        return {"status": "finalizing"}
     try:
         path = await __import__("asyncio").to_thread(complete_uploaded_job, job_id, worker_id)
     except LookupError as exc:
+        state = uploaded_job_status(job_id, worker_id)
+        if state in {"finalizing", "completed"}:
+            return {"status": state}
         raise HTTPException(409, str(exc)) from exc
     except Exception as exc:
         raise HTTPException(422, f"결과 검증에 실패했습니다: {str(exc)[-500:]}") from exc
@@ -135,5 +144,10 @@ def job_fail(
     worker_id: str = Depends(worker_auth),
     _=Depends(db),
 ):
-    assigned_job(job_id, worker_id)
+    job = assigned_job(job_id, worker_id)
+    # After TCP EOF the controller owns the received file. Older workers may
+    # still report a late completion-request error; do not let that delete a
+    # result currently being validated/remuxed.
+    if job.state == "finalizing":
+        return
     fail_job(job_id, worker_id, body.error)

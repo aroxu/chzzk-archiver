@@ -17,7 +17,13 @@ from pathlib import Path
 from ..config import logger, settings
 from ..db import session
 from ..models import EncodingJob, Recording
-from .encoding import fail_job, heartbeat_job, upload_destination
+from .encoding import (
+    complete_uploaded_job,
+    fail_job,
+    heartbeat_job,
+    upload_destination,
+    uploaded_job_status,
+)
 
 
 async def _send_growing_source(
@@ -145,6 +151,16 @@ async def handle_stream(
             sent,
             received,
         )
+        # Finalization belongs to the controller, not to a best-effort HTTP
+        # acknowledgement from the worker.  Otherwise a worker restart or a
+        # malformed control URL leaves a fully received file stuck forever.
+        try:
+            await asyncio.to_thread(complete_uploaded_job, job_id, worker_id)
+        except LookupError:
+            # A very fast worker can send the legacy HTTP completion ACK at
+            # the same instant.  That request may already own finalization.
+            if uploaded_job_status(job_id, worker_id) not in {"finalizing", "completed"}:
+                raise
     except Exception as exc:
         if destination:
             destination.unlink(missing_ok=True)

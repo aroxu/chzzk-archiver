@@ -344,14 +344,36 @@ def _install_output(job_id: int, encoded: Path) -> Path:
 
 
 def complete_uploaded_job(job_id: int, worker_id: str) -> Path:
+    """Claim and publish a received stream exactly once.
+
+    The TCP receiver normally claims the result before the worker sends its
+    HTTP acknowledgement.  Keeping the claim in the database makes that HTTP
+    call idempotent and prevents a lost acknowledgement from deleting a fully
+    uploaded encode.
+    """
     with session():
         job = EncodingJob.get_or_none(
             EncodingJob.id == job_id,
             EncodingJob.worker == worker_id,
-            EncodingJob.state == "uploading",
+            EncodingJob.state.in_(["uploading", "finalizing"]),
         )
         if not job or not job.upload_path:
             raise LookupError("uploaded job was not found")
+        if job.state == "uploading":
+            claimed = EncodingJob.update(
+                state="finalizing",
+                lease_expires_at=None,
+                encoding_speed=0,
+                eta_seconds=0,
+            ).where(
+                EncodingJob.id == job.id,
+                EncodingJob.worker == worker_id,
+                EncodingJob.state == "uploading",
+            ).execute()
+            if not claimed:
+                raise LookupError("uploaded job is already being finalized")
+        else:
+            raise LookupError("uploaded job is already being finalized")
         path = Path(job.upload_path)
     try:
         return _install_output(job_id, path)
@@ -359,6 +381,16 @@ def complete_uploaded_job(job_id: int, worker_id: str) -> Path:
         path.unlink(missing_ok=True)
         fail_job(job_id, worker_id, str(exc))
         raise
+
+
+def uploaded_job_status(job_id: int, worker_id: str) -> str | None:
+    """Return the current completion state for an idempotent worker ACK."""
+    with session():
+        job = EncodingJob.get_or_none(
+            EncodingJob.id == job_id,
+            EncodingJob.worker == worker_id,
+        )
+        return job.state if job else None
 
 
 async def process_local_job(job_id: int) -> None:

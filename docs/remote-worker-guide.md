@@ -47,6 +47,10 @@ ARCHIVER_WORKER_POLL_INTERVAL=5
 ARCHIVER_ENCODING_VIDEO_ENCODER=hevc_nvenc
 ```
 
+컨트롤러 주소는 전체 URL을 권장합니다. 실수로 `archive.example`처럼 호스트 이름만
+입력해도 워커가 `https://`를 자동으로 붙이며, `localhost`와 `127.0.0.1`은 로컬
+테스트를 위해 `http://`를 사용합니다.
+
 `ARCHIVER_ENCODING_VIDEO_ENCODER`는 워커가 받을 작업을 제한합니다. 예를 들어 `hevc_nvenc`로
 설정한 워커는 NVENC 시험 인코딩이 성공할 때만 `hevc_nvenc` 작업을 받습니다. 설정하지 않거나
 `auto`로 두면 실제로 동작하는 GPU 인코더를 우선 사용하고 `libx265`를 예비 인코더로 둡니다.

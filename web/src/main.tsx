@@ -1,12 +1,6 @@
 import React, { useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
-import {
-  QueryClient,
-  QueryClientProvider,
-  useMutation,
-  useQuery,
-  useQueryClient,
-} from "@tanstack/react-query";
+import { QueryClient, QueryClientProvider, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Button } from "@heroui/react";
 import { AnimatePresence, motion, useReducedMotion } from "framer-motion";
 import {
@@ -54,6 +48,7 @@ type Recording = {
   encoding_speed?: number;
   encoding_eta_seconds?: number;
   encoding_processed_seconds?: number;
+  encoding_state?: string;
   recorded_seconds: number;
   duration_seconds: number;
   recording_active: boolean;
@@ -70,8 +65,7 @@ function hasActiveWork(data: unknown): boolean {
     (item) =>
       item &&
       typeof item === "object" &&
-      (IN_FLIGHT_STATES.has((item as Recording).state) ||
-        (item as Subscription).live === true),
+      (IN_FLIGHT_STATES.has((item as Recording).state) || (item as Subscription).live === true),
   );
 }
 type Subscription = {
@@ -98,10 +92,7 @@ async function api<T>(path: string, init?: RequestInit): Promise<T> {
     headers: { "Content-Type": "application/json", ...(init?.headers || {}) },
     ...init,
   });
-  if (!response.ok)
-    throw new Error(
-      (await response.json().catch(() => ({}))).detail || "요청에 실패했습니다",
-    );
+  if (!response.ok) throw new Error((await response.json().catch(() => ({}))).detail || "요청에 실패했습니다");
   return response.status === 204 ? (undefined as T) : response.json();
 }
 const size = (n: number) => {
@@ -110,20 +101,19 @@ const size = (n: number) => {
   if (n >= 1024 ** 2) return `${(n / 1024 ** 2).toFixed(1)} MB`;
   return `${(n / 1024).toFixed(1)} KB`;
 };
-const typeLabel = (type: Recording["type"]) =>
-  type === "vod" ? "VIDEO" : type.toUpperCase();
+const typeLabel = (type: Recording["type"]) => (type === "vod" ? "VIDEO" : type.toUpperCase());
 const stateLabel = (r: Recording) =>
   r.state === "processing"
     ? "ENCODING"
     : r.state === "recording" || r.state === "queued"
-    ? r.type === "live"
-      ? "RECORDING"
-      : "DOWNLOADING"
-    : r.state === "completed"
       ? r.type === "live"
-        ? "RECORDED"
-        : "DOWNLOADED"
-      : r.state.toUpperCase();
+        ? "RECORDING"
+        : "DOWNLOADING"
+      : r.state === "completed"
+        ? r.type === "live"
+          ? "RECORDED"
+          : "DOWNLOADED"
+        : r.state.toUpperCase();
 const eta = (seconds?: number) => {
   if (seconds == null) return "남은 시간 계산 중";
   if (seconds < 60) return `약 ${Math.max(1, Math.ceil(seconds))}초 남음`;
@@ -132,8 +122,7 @@ const eta = (seconds?: number) => {
     minutes = Math.ceil((seconds % 3600) / 60);
   return `약 ${hours}시간${minutes ? ` ${minutes}분` : ""} 남음`;
 };
-const speed = (bps: number) =>
-  bps ? `${(bps / 1024 / 1024).toFixed(1)} MB/s` : "속도 계산 중";
+const speed = (bps: number) => (bps ? `${(bps / 1024 / 1024).toFixed(1)} MB/s` : "속도 계산 중");
 
 function Auth({ setup }: { setup: boolean }) {
   const [username, setUsername] = useState("");
@@ -145,21 +134,14 @@ function Auth({ setup }: { setup: boolean }) {
     e.preventDefault();
     setError("");
     try {
-      await api(
-        setup
-          ? "/api/auth/setup"
-          : register
-            ? "/api/auth/register"
-            : "/api/auth/login",
-        {
-          method: "POST",
-          body: JSON.stringify({
-            username,
-            password,
-            ...(register ? { invite } : {}),
-          }),
-        },
-      );
+      await api(setup ? "/api/auth/setup" : register ? "/api/auth/register" : "/api/auth/login", {
+        method: "POST",
+        body: JSON.stringify({
+          username,
+          password,
+          ...(register ? { invite } : {}),
+        }),
+      });
       location.reload();
     } catch (e) {
       setError((e as Error).message);
@@ -176,22 +158,14 @@ function Auth({ setup }: { setup: boolean }) {
           <br />
           <em>당신의 기록</em>으로.
         </h1>
-        <p>
-          구독한 채널을 자동으로 기록하고, 나만의 라이브러리에서 다시 만나세요.
-        </p>
+        <p>구독한 채널을 자동으로 기록하고, 나만의 라이브러리에서 다시 만나세요.</p>
         <div className="signal">
           <i /> LIVE CAPTURE SYSTEM
         </div>
       </section>
       <form className="auth-card" onSubmit={submit}>
         <small>{setup ? "FIRST RUN" : "WELCOME BACK"}</small>
-        <h2>
-          {setup
-            ? "관리자 계정 만들기"
-            : register
-              ? "초대로 가입하기"
-              : "아카이브에 로그인"}
-        </h2>
+        <h2>{setup ? "관리자 계정 만들기" : register ? "초대로 가입하기" : "아카이브에 로그인"}</h2>
         <p className="hint">
           {setup
             ? "이 계정이 서버의 첫 관리자가 됩니다."
@@ -201,29 +175,16 @@ function Auth({ setup }: { setup: boolean }) {
         </p>
         <label>
           사용자 이름
-          <input
-            value={username}
-            onChange={(e) => setUsername(e.target.value)}
-            required
-          />
+          <input value={username} onChange={(e) => setUsername(e.target.value)} required />
         </label>
         <label>
           비밀번호
-          <input
-            type="password"
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-            required
-          />
+          <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} required />
         </label>
         {register && (
           <label>
             초대 코드
-            <input
-              value={invite}
-              onChange={(e) => setInvite(e.target.value)}
-              required
-            />
+            <input value={invite} onChange={(e) => setInvite(e.target.value)} required />
           </label>
         )}
         {error && <p className="error">{error}</p>}
@@ -247,28 +208,16 @@ function Auth({ setup }: { setup: boolean }) {
   );
 }
 
-function PageTransition({
-  page,
-  children,
-}: {
-  page: string;
-  children: React.ReactNode;
-}) {
+function PageTransition({ page, children }: { page: string; children: React.ReactNode }) {
   const reduceMotion = useReducedMotion();
   return (
     <AnimatePresence mode="wait" initial={false}>
       <motion.div
         className="page-transition"
         key={page}
-        initial={
-          reduceMotion ? false : { opacity: 0, y: 14, filter: "blur(4px)" }
-        }
+        initial={reduceMotion ? false : { opacity: 0, y: 14, filter: "blur(4px)" }}
         animate={{ opacity: 1, y: 0, filter: "blur(0px)" }}
-        exit={
-          reduceMotion
-            ? { opacity: 1 }
-            : { opacity: 0, y: -8, filter: "blur(3px)" }
-        }
+        exit={reduceMotion ? { opacity: 1 } : { opacity: 0, y: -8, filter: "blur(3px)" }}
         transition={{
           duration: reduceMotion ? 0 : 0.24,
           ease: [0.22, 1, 0.36, 1],
@@ -288,9 +237,7 @@ function Shell({ user }: { user: User }) {
     { id: "channels", label: "내 채널", icon: Radio },
     { id: "library", label: "라이브러리", icon: Archive },
     { id: "settings", label: "설정", icon: Settings },
-    ...(user.role === "admin"
-      ? [{ id: "admin", label: "관리", icon: Shield }]
-      : []),
+    ...(user.role === "admin" ? [{ id: "admin", label: "관리", icon: Shield }] : []),
   ];
   return (
     <div className="shell">
@@ -321,11 +268,7 @@ function Shell({ user }: { user: User }) {
           </p>
           <button
             title="로그아웃"
-            onClick={() =>
-              api("/api/auth/logout", { method: "POST" }).then(() =>
-                location.reload(),
-              )
-            }
+            onClick={() => api("/api/auth/logout", { method: "POST" }).then(() => location.reload())}
           >
             <LogOut size={17} />
           </button>
@@ -339,8 +282,7 @@ function Shell({ user }: { user: User }) {
               <h1>{nav.find((n) => n.id === tab)?.label}</h1>
             </div>
             <div className={`cookie ${user.cookie_status}`}>
-              <CircleDot size={15} /> 인증 쿠키{" "}
-              {user.cookie_status === "valid" ? "연결됨" : "필요"}
+              <CircleDot size={15} /> 인증 쿠키 {user.cookie_status === "valid" ? "연결됨" : "필요"}
             </div>
           </header>
           {tab === "dashboard" ? (
@@ -376,18 +318,9 @@ function Dashboard({ user, onPlay }: { user: User; onPlay: (recording: Recording
     <>
       <section className="stats">
         <Stat icon={Radio} label="구독 채널" value={subs.length} />
-        <Stat
-          icon={CircleDot}
-          label="녹화 중"
-          value={recs.filter((r) => r.state === "recording").length}
-          live
-        />
+        <Stat icon={CircleDot} label="녹화 중" value={recs.filter((r) => r.state === "recording").length} live />
         <Stat icon={Video} label="보관된 영상" value={recs.length} />
-        <Stat
-          icon={HardDrive}
-          label="사용된 용량"
-          value={size(recs.reduce((a, r) => a + r.size, 0))}
-        />
+        <Stat icon={HardDrive} label="사용된 용량" value={size(recs.reduce((a, r) => a + r.size, 0))} />
       </section>
       <section className="section-head">
         <div>
@@ -396,9 +329,7 @@ function Dashboard({ user, onPlay }: { user: User; onPlay: (recording: Recording
         </div>
       </section>
       <RecordingGrid recordings={recs.slice(0, 6)} onPlay={onPlay} canPurge={user.role === "admin"} />
-      {!recs.length && (
-        <Empty text={`${user.username}님의 첫 기록을 기다리고 있어요.`} />
-      )}
+      {!recs.length && <Empty text={`${user.username}님의 첫 기록을 기다리고 있어요.`} />}
     </>
   );
 }
@@ -446,9 +377,7 @@ function Channels() {
       setNotice("");
       qc.invalidateQueries({ queryKey: ["subs"] });
       if (!result?.live) return;
-      const label = result.live_title
-        ? `"${result.live_title}"`
-        : `${result.name} 채널`;
+      const label = result.live_title ? `"${result.live_title}"` : `${result.name} 채널`;
       if (!confirm(`${label} 방송이 진행 중입니다. 지금부터 바로 녹화할까요?`)) return;
       try {
         await api("/api/subscriptions/start-live", {
@@ -493,16 +422,12 @@ function Channels() {
       <div className="channel-list">
         {data.map((ch) => (
           <article key={ch.id}>
-              <div className="avatar">
-                {ch.image ? <img src={ch.image} alt="" /> : ch.name[0]}
-              </div>
+            <div className="avatar">{ch.image ? <img src={ch.image} alt="" /> : ch.name[0]}</div>
             <div>
               <b>{ch.name}</b>
               <small>{ch.channel_id}</small>
             </div>
-            <span className={ch.live ? "on" : ""}>
-              {ch.live ? "LIVE" : "OFFLINE"}
-            </span>
+            <span className={ch.live ? "on" : ""}>{ch.live ? "LIVE" : "OFFLINE"}</span>
             <button
               onClick={async () => {
                 if (confirm("기존 영상도 라이브러리에서 제거할까요?"))
@@ -598,7 +523,13 @@ const mediaTime = (seconds: number) => {
     : `${minutes}:${String(rest).padStart(2, "0")}`;
 };
 
-function ArchivePlayer({ recording, onAspectRatio }: { recording: Recording; onAspectRatio?: (ratio: number) => void }) {
+function ArchivePlayer({
+  recording,
+  onAspectRatio,
+}: {
+  recording: Recording;
+  onAspectRatio?: (ratio: number) => void;
+}) {
   const frame = useRef<HTMLDivElement>(null);
   const video = useRef<HTMLVideoElement>(null);
   const [playing, setPlaying] = useState(false);
@@ -673,7 +604,11 @@ function ArchivePlayer({ recording, onAspectRatio }: { recording: Recording; onA
           step="0.1"
           value={Math.min(current, duration || 0)}
           onChange={(event) => seek(Number(event.target.value))}
-          style={{ "--progress": `${duration ? (current / duration) * 100 : 0}%` } as React.CSSProperties}
+          style={
+            {
+              "--progress": `${duration ? (current / duration) * 100 : 0}%`,
+            } as React.CSSProperties
+          }
           aria-label="재생 위치"
         />
         <div className="player-buttons">
@@ -683,9 +618,22 @@ function ArchivePlayer({ recording, onAspectRatio }: { recording: Recording; onA
           <button onClick={toggleMute} aria-label={muted ? "음소거 해제" : "음소거"}>
             {muted || volume === 0 ? <VolumeX /> : <Volume2 />}
           </button>
-          <input className="player-volume" type="range" min="0" max="1" step="0.05" value={muted ? 0 : volume} onChange={(event) => changeVolume(Number(event.target.value))} aria-label="볼륨" />
-          <span>{mediaTime(current)} / {mediaTime(duration)}</span>
-          <button className="player-fullscreen" onClick={fullscreen} aria-label="전체 화면"><Maximize /></button>
+          <input
+            className="player-volume"
+            type="range"
+            min="0"
+            max="1"
+            step="0.05"
+            value={muted ? 0 : volume}
+            onChange={(event) => changeVolume(Number(event.target.value))}
+            aria-label="볼륨"
+          />
+          <span>
+            {mediaTime(current)} / {mediaTime(duration)}
+          </span>
+          <button className="player-fullscreen" onClick={fullscreen} aria-label="전체 화면">
+            <Maximize />
+          </button>
         </div>
       </div>
     </div>
@@ -711,10 +659,11 @@ function PlayerModal({ recording, onClose }: { recording: Recording; onClose: ()
   };
 
   useEffect(() => {
-    const clamp = () => setDialogSize((current) => ({
-      width: Math.min(current.width, window.innerWidth - 24),
-      height: Math.min(current.height, window.innerHeight - 24),
-    }));
+    const clamp = () =>
+      setDialogSize((current) => ({
+        width: Math.min(current.width, window.innerWidth - 24),
+        height: Math.min(current.height, window.innerHeight - 24),
+      }));
     const close = (event: KeyboardEvent) => event.key === "Escape" && onClose();
     document.body.style.overflow = "hidden";
     window.addEventListener("resize", clamp);
@@ -731,15 +680,14 @@ function PlayerModal({ recording, onClose }: { recording: Recording; onClose: ()
     const maxDialogHeight = Math.max(240, window.innerHeight - 24);
     const minDialogWidth = Math.min(360, maxDialogWidth);
     const minDialogHeight = Math.min(300, maxDialogHeight);
-    const maxPlayerWidth = Math.max(1, Math.min(
-      maxDialogWidth - chromeWidth,
-      (maxDialogHeight - chromeHeight) * ratio,
-    ));
-    const minPlayerWidth = Math.min(maxPlayerWidth, Math.max(
+    const maxPlayerWidth = Math.max(
       1,
-      minDialogWidth - chromeWidth,
-      (minDialogHeight - chromeHeight) * ratio,
-    ));
+      Math.min(maxDialogWidth - chromeWidth, (maxDialogHeight - chromeHeight) * ratio),
+    );
+    const minPlayerWidth = Math.min(
+      maxPlayerWidth,
+      Math.max(1, minDialogWidth - chromeWidth, (minDialogHeight - chromeHeight) * ratio),
+    );
     const playerWidth = Math.min(maxPlayerWidth, Math.max(minPlayerWidth, requestedPlayerWidth));
     return {
       width: playerWidth + chromeWidth,
@@ -763,11 +711,9 @@ function PlayerModal({ recording, onClose }: { recording: Recording; onClose: ()
         bounds.width - playerBounds.width,
         bounds.height - playerBounds.height,
       );
-      setDialogSize((current) => (
-        Math.abs(current.width - next.width) < 0.01 && Math.abs(current.height - next.height) < 0.01
-          ? current
-          : next
-      ));
+      setDialogSize((current) =>
+        Math.abs(current.width - next.width) < 0.01 && Math.abs(current.height - next.height) < 0.01 ? current : next,
+      );
     };
     const scheduleRatio = () => {
       if (frame) cancelAnimationFrame(frame);
@@ -812,12 +758,9 @@ function PlayerModal({ recording, onClose }: { recording: Recording; onClose: ()
       const horizontalDelta = pointer.clientX - origin.x;
       const verticalDelta = (pointer.clientY - origin.y) * aspectRatio;
       const dominantDelta = Math.abs(horizontalDelta) >= Math.abs(verticalDelta) ? horizontalDelta : verticalDelta;
-      setDialogSize(fitDialogToVideo(
-        origin.playerWidth + dominantDelta,
-        aspectRatio,
-        origin.chromeWidth,
-        origin.chromeHeight,
-      ));
+      setDialogSize(
+        fitDialogToVideo(origin.playerWidth + dominantDelta, aspectRatio, origin.chromeWidth, origin.chromeHeight),
+      );
     };
     const stop = () => {
       resizing.current = false;
@@ -837,7 +780,13 @@ function PlayerModal({ recording, onClose }: { recording: Recording; onClose: ()
   };
 
   return (
-    <motion.div className="player-overlay" onPointerDown={closeFromBackdrop} initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
+    <motion.div
+      className="player-overlay"
+      onPointerDown={closeFromBackdrop}
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      exit={{ opacity: 0 }}
+    >
       <motion.section
         ref={dialog}
         className="player-dialog"
@@ -849,29 +798,45 @@ function PlayerModal({ recording, onClose }: { recording: Recording; onClose: ()
         transition={{ type: "spring", stiffness: 350, damping: 31 }}
       >
         <div className="player-dialog-head">
-          <div><small>{recording.channel} · {typeLabel(recording.type)}</small><strong>{recording.title}</strong></div>
-          <button onClick={onClose} aria-label="플레이어 닫기">✕</button>
+          <div>
+            <small>
+              {recording.channel} · {typeLabel(recording.type)}
+            </small>
+            <strong>{recording.title}</strong>
+          </div>
+          <button onClick={onClose} aria-label="플레이어 닫기">
+            ✕
+          </button>
         </div>
-        <div className="player-dialog-media"><ArchivePlayer recording={recording} onAspectRatio={enforceAspectRatio} /></div>
-        <div className="player-dialog-foot">{new Date(recording.created_at).toLocaleString("ko-KR")} · {size(recording.size)}</div>
-        <button className="player-resize" onPointerDown={startResize} aria-label="플레이어 크기 조절" title="드래그하여 크기 조절" />
+        <div className="player-dialog-media">
+          <ArchivePlayer recording={recording} onAspectRatio={enforceAspectRatio} />
+        </div>
+        <div className="player-dialog-foot">
+          {new Date(recording.created_at).toLocaleString("ko-KR")} · {size(recording.size)}
+        </div>
+        <button
+          className="player-resize"
+          onPointerDown={startResize}
+          aria-label="플레이어 크기 조절"
+          title="드래그하여 크기 조절"
+        />
       </motion.section>
     </motion.div>
   );
 }
 
-function RecordingGrid({ recordings, onPlay, canPurge = false }: {
+function RecordingGrid({
+  recordings,
+  onPlay,
+  canPurge = false,
+}: {
   recordings: Recording[];
   onPlay: (recording: Recording) => void;
   canPurge?: boolean;
 }) {
   const qc = useQueryClient();
   const cancel = async (r: Recording) => {
-    if (
-      confirm(
-        r.type === "live" ? "녹화를 중단할까요?" : "다운로드를 취소할까요?",
-      )
-    ) {
+    if (confirm(r.type === "live" ? "녹화를 중단할까요?" : "다운로드를 취소할까요?")) {
       await api(`/api/recordings/${r.id}/cancel`, { method: "POST" });
       qc.invalidateQueries({ queryKey: ["recordings"] });
     }
@@ -882,9 +847,7 @@ function RecordingGrid({ recordings, onPlay, canPurge = false }: {
         <article key={r.id}>
           <div
             className={`thumb ${r.state === "completed" ? "viewable" : ""}`}
-            style={
-              r.thumbnail ? { backgroundImage: `url(${r.thumbnail})` } : {}
-            }
+            style={r.thumbnail ? { backgroundImage: `url(${r.thumbnail})` } : {}}
             onClick={() => r.state === "completed" && onPlay(r)}
             onKeyDown={(event) => {
               if (r.state === "completed" && (event.key === "Enter" || event.key === " ")) {
@@ -933,43 +896,53 @@ function RecordingGrid({ recordings, onPlay, canPurge = false }: {
                       <strong>{mediaTime(r.recorded_seconds || 0)}</strong>
                     </div>
                     <div>
-                      <span>{size(r.size)} 저장됨{r.speed_bps > 0 ? ` · ${speed(r.speed_bps)}` : ""}</span>
+                      <span>
+                        {size(r.size)} 저장됨
+                        {r.speed_bps > 0 ? ` · ${speed(r.speed_bps)}` : ""}
+                      </span>
                     </div>
-                    <div className={`live-recording-meter ${r.recording_active ? "writing" : ""}`}><i /></div>
+                    <div className={`live-recording-meter ${r.recording_active ? "writing" : ""}`}>
+                      <i />
+                    </div>
                   </div>
                 )}
                 <div>
                   <span>
                     {r.state === "processing"
-                      ? r.encoding_progress != null && r.encoding_progress > 0
-                        ? `HEVC 인코딩 ${r.encoding_progress.toFixed(1)}%`
-                        : `HEVC 인코딩 중 · ${mediaTime(r.encoding_processed_seconds || 0)}`
+                      ? r.encoding_state === "finalizing"
+                        ? "MP4 마무리 중"
+                        : r.encoding_state === "uploading"
+                          ? "결과 전송 완료"
+                          : r.encoding_progress != null && r.encoding_progress > 0
+                            ? `HEVC 인코딩 ${r.encoding_progress.toFixed(1)}%`
+                            : `HEVC 인코딩 중 · ${mediaTime(r.encoding_processed_seconds || 0)}`
                       : r.progress != null
-                      ? `${r.progress.toFixed(1)}%`
-                      : "연결 중"}
+                        ? `${r.progress.toFixed(1)}%`
+                        : "연결 중"}
                   </span>
                   <span>
                     {size(r.size)}
                     {r.total_size ? ` / ${size(r.total_size)}` : ""}
                   </span>
                 </div>
-                <progress
-                  max="100"
-                  value={r.state === "processing" ? r.encoding_progress ?? 0 : r.progress ?? 0}
-                />
+                <progress max="100" value={r.state === "processing" ? (r.encoding_progress ?? 0) : (r.progress ?? 0)} />
                 <div className="download-eta">
                   <span>
                     {r.state === "processing"
-                      ? r.encoding_speed && r.encoding_speed > 0
-                        ? `${r.encoding_speed.toFixed(2)}x 속도`
-                        : "인코더 준비 중"
+                      ? r.encoding_state === "finalizing"
+                        ? "컨트롤러 처리 중"
+                        : r.encoding_speed && r.encoding_speed > 0
+                          ? `${r.encoding_speed.toFixed(2)}x 속도`
+                          : "인코더 준비 중"
                       : speed(r.speed_bps)}
                   </span>
                   <span>
                     {r.state === "processing"
-                      ? r.encoding_eta_seconds != null
-                        ? eta(r.encoding_eta_seconds)
-                        : "남은 시간 계산 중"
+                      ? r.encoding_state === "finalizing"
+                        ? "잠시만 기다려 주세요"
+                        : r.encoding_eta_seconds != null
+                          ? eta(r.encoding_eta_seconds)
+                          : "남은 시간 계산 중"
                       : eta(r.eta_seconds)}
                   </span>
                 </div>
@@ -999,8 +972,14 @@ function RecordingGrid({ recordings, onPlay, canPurge = false }: {
                 <button
                   className="purge"
                   onClick={async () => {
-                    if (confirm(`“${r.title}” 아카이브를 영구 삭제할까요?\n모든 사용자에게서 제거되며 영상 파일도 삭제됩니다.`)) {
-                      await api(`/api/admin/recordings/${r.id}`, { method: "DELETE" });
+                    if (
+                      confirm(
+                        `“${r.title}” 아카이브를 영구 삭제할까요?\n모든 사용자에게서 제거되며 영상 파일도 삭제됩니다.`,
+                      )
+                    ) {
+                      await api(`/api/admin/recordings/${r.id}`, {
+                        method: "DELETE",
+                      });
                       qc.invalidateQueries({ queryKey: ["recordings"] });
                       qc.invalidateQueries({ queryKey: ["admin"] });
                     }
@@ -1023,20 +1002,13 @@ function SettingsPage() {
       <article>
         <small>CHROME EXTENSION</small>
         <h2>브라우저 연결</h2>
-        <p>
-          치지직 로그인 쿠키를 안전하게 동기화합니다. 코드는 10분 동안 한 번만
-          사용할 수 있습니다.
-        </p>
+        <p>치지직 로그인 쿠키를 안전하게 동기화합니다. 코드는 10분 동안 한 번만 사용할 수 있습니다.</p>
         {code ? (
           <code>{code}</code>
         ) : (
           <button
             className="primary"
-            onClick={() =>
-              api<{ code: string }>("/api/me/pair", { method: "POST" }).then(
-                (x) => setCode(x.code),
-              )
-            }
+            onClick={() => api<{ code: string }>("/api/me/pair", { method: "POST" }).then((x) => setCode(x.code))}
           >
             페어링 코드 만들기
           </button>
@@ -1045,10 +1017,7 @@ function SettingsPage() {
       <article>
         <small>SECURITY</small>
         <h2>개인 라이브러리</h2>
-        <p>
-          영상 접근 권한은 계정별로 분리됩니다. 같은 방송을 다른 사용자가
-          구독해도 실제 파일은 하나만 저장됩니다.
-        </p>
+        <p>영상 접근 권한은 계정별로 분리됩니다. 같은 방송을 다른 사용자가 구독해도 실제 파일은 하나만 저장됩니다.</p>
       </article>
     </div>
   );
@@ -1066,11 +1035,7 @@ function Admin() {
         <Stat icon={Users} label="사용자" value={data.users} />
         <Stat icon={Radio} label="활성 구독" value={data.subscriptions} />
         <Stat icon={Video} label="공용 녹화" value={data.recordings} />
-        <Stat
-          icon={HardDrive}
-          label="디스크 사용"
-          value={`${data.disk.percent}%`}
-        />
+        <Stat icon={HardDrive} label="디스크 사용" value={`${data.disk.percent}%`} />
       </section>
       <div className="settings-grid admin-invites">
         <article>

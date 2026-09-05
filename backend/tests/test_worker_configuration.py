@@ -51,3 +51,9 @@ def test_worker_reads_machine_progress_from_ffmpeg_stderr():
     )
     assert reports == [(127.8, 1.75)]
     assert errors == ["frame=123"]
+
+
+def test_worker_normalizes_hostname_only_controller_urls():
+    assert worker.normalize_server_url("ca.example.test/") == "https://ca.example.test"
+    assert worker.normalize_server_url("localhost:8010") == "http://localhost:8010"
+    assert worker.normalize_server_url("http://127.0.0.1:8010/") == "http://127.0.0.1:8010"

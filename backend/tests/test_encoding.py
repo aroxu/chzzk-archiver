@@ -154,6 +154,13 @@ def test_full_duplex_tcp_streams_source_and_receives_encoded(monkeypatch, tmp_pa
         lease_expires_at=datetime.now(UTC),
     )
     monkeypatch.setattr(encoding.settings, "worker_token", "tcp-secret")
+    finalized = []
+
+    def fake_finalize(job_id, worker_id):
+        finalized.append((job_id, worker_id))
+        return Path(EncodingJob.get_by_id(job_id).upload_path)
+
+    monkeypatch.setattr("app.services.stream_transport.complete_uploaded_job", fake_finalize)
 
     async def scenario():
         server = await asyncio.start_server(handle_stream, "127.0.0.1", 0)
@@ -180,3 +187,30 @@ def test_full_duplex_tcp_streams_source_and_receives_encoded(monkeypatch, tmp_pa
     stored = EncodingJob.get_by_id(job.id)
     assert stored.state == "uploading"
     assert Path(stored.upload_path).read_bytes() == b"encoded-result"
+    assert finalized == [(job.id, worker.id)]
+
+
+def test_late_worker_failure_cannot_delete_a_finalizing_result(monkeypatch, tmp_path):
+    source = tmp_path / "capture.ts"
+    source.write_bytes(b"transport")
+    uploaded = tmp_path / ".worker-result.mp4"
+    uploaded.write_bytes(b"encoded")
+    recording = _recording(source)
+    worker = WorkerNode.create(id="safe-finalize", hostname="win", platform="Windows")
+    job = EncodingJob.create(
+        recording=recording.id,
+        state="finalizing",
+        worker=worker.id,
+        source_path=str(source),
+        upload_path=str(uploaded),
+    )
+    monkeypatch.setattr(encoding.settings, "worker_token", "worker-secret")
+    with TestClient(app) as client:
+        response = client.post(
+            f"/api/worker/jobs/{job.id}/fail",
+            headers={"Authorization": "Bearer worker-secret", "X-Worker-ID": worker.id},
+            json={"error": "late completion request timeout"},
+        )
+    assert response.status_code == 204
+    assert EncodingJob.get_by_id(job.id).state == "finalizing"
+    assert uploaded.exists()
