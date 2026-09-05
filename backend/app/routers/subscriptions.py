@@ -10,7 +10,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from ..config import logger
 from ..db import database, db
 from ..models import Broadcast, Channel, Entitlement, Recording, Subscription, User
-from ..schemas import StartLiveBody, SubscribeBody, UnsubscribeBody
+from ..schemas import StartLiveBody, SubscribeBody, SubscriptionUpdateBody, UnsubscribeBody
 from ..security import audit, current_user
 from ..services import chzzk
 from ..services.media import recording_json
@@ -154,3 +154,31 @@ def unsubscribe(subscription_id: int, body: UnsubscribeBody, user: User = Depend
                 Entitlement.user == user.id, Entitlement.recording.in_(ids)
             ).execute()
     audit(user.id, "unsubscribe", channel_id=sub.channel_id, remove_recordings=body.remove_recordings)
+
+
+@router.patch("/api/subscriptions/{subscription_id}")
+def update_subscription(
+    subscription_id: int,
+    body: SubscriptionUpdateBody,
+    user: User = Depends(current_user),
+    _=Depends(db),
+):
+    sub = Subscription.get_or_none(
+        Subscription.id == subscription_id,
+        Subscription.user == user.id,
+        Subscription.active == True,  # noqa: E712
+    )
+    if not sub:
+        raise HTTPException(404, "구독 중인 채널이 아닙니다")
+    sub.auto_record = body.auto_record
+    sub.save(only=[Subscription.auto_record])
+    audit(user.id, "subscription.auto_record", channel_id=sub.channel_id, enabled=body.auto_record)
+    channel = Channel.get_by_id(sub.channel_id)
+    return {
+        "id": sub.id,
+        "channel_id": channel.chzzk_id,
+        "name": channel.name,
+        "image": channel.image_url,
+        "live": channel.last_live,
+        "auto_record": sub.auto_record,
+    }

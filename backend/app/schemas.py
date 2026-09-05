@@ -23,6 +23,10 @@ class SubscribeBody(BaseModel):
     auto_record: bool = True
 
 
+class SubscriptionUpdateBody(BaseModel):
+    auto_record: bool
+
+
 class StartLiveBody(BaseModel):
     """Opt-in to capture a broadcast that is already running."""
 

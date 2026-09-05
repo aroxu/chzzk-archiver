@@ -120,3 +120,17 @@ def test_subscribe_survives_a_failing_live_probe(client, monkeypatch):
 
     assert body["live"] is False
     assert Subscription.select().count() == 1
+
+
+def test_subscription_auto_record_can_be_toggled(client, monkeypatch):
+    _offline(monkeypatch)
+    created = client.post("/api/subscriptions", json={"channel": "1" * 32}).json()
+
+    response = client.patch(
+        f"/api/subscriptions/{created['id']}",
+        json={"auto_record": False},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["auto_record"] is False
+    assert Subscription.get_by_id(created["id"]).auto_record is False

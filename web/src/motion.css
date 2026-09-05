@@ -1,0 +1,381 @@
+/* Motion-specific overrides live separately so the existing visual system
+   remains intact while Framer Motion owns transforms and element lifecycles. */
+.page-transition {
+  width: 100%;
+  min-width: 0;
+}
+
+.mobile-menu-button,
+.mobile-navigation {
+  display: none;
+}
+
+.stat,
+.recording-grid article,
+.channel-list article,
+.settings-grid article,
+.add-bar,
+.notice,
+.error,
+.player-overlay,
+.player-dialog {
+  animation: none;
+}
+
+.recording-grid article {
+  transition:
+    border-color 0.2s ease,
+    box-shadow 0.2s ease;
+}
+
+.recording-grid article:hover {
+  transform: none;
+}
+
+.stat strong,
+.download-progress,
+.live-recording-status strong {
+  font-variant-numeric: tabular-nums;
+}
+
+.channel-list article {
+  min-width: 0;
+}
+
+.auto-record-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
+  flex: none;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  padding: 5px;
+  font-size: 11px;
+}
+
+.auto-record-toggle:disabled {
+  cursor: wait;
+}
+
+.auto-record-toggle > i {
+  position: relative;
+  width: 34px;
+  height: 19px;
+  flex: none;
+  border-radius: 999px;
+  background: #303a35;
+  transition: background-color 0.2s ease;
+}
+
+.auto-record-toggle > i::after {
+  content: "";
+  position: absolute;
+  left: 2px;
+  top: 2px;
+  width: 15px;
+  height: 15px;
+  border-radius: 50%;
+  background: #d8dfdb;
+  transform: translateX(0);
+  transition: transform 0.2s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.auto-record-toggle[aria-checked="true"] > i {
+  background: var(--lime);
+}
+
+.auto-record-toggle[aria-checked="true"] > i::after {
+  background: #111;
+  transform: translateX(15px);
+}
+
+.recording-actions button:disabled {
+  cursor: wait;
+  color: #59635e;
+}
+
+.download-progress progress::-webkit-progress-value,
+.download-progress progress::-moz-progress-bar {
+  animation: none;
+}
+
+.download-progress progress.indeterminate {
+  background:
+    linear-gradient(90deg, transparent, var(--mint), var(--lime), transparent) 0 0 / 38% 100% no-repeat,
+    #26302b;
+  animation: indeterminate-progress 1.1s linear infinite;
+}
+
+.download-progress progress.indeterminate::-webkit-progress-bar {
+  background: transparent;
+}
+
+.download-progress progress.indeterminate::-webkit-progress-value,
+.download-progress progress.indeterminate::-moz-progress-bar {
+  background: transparent;
+}
+
+@keyframes indeterminate-progress {
+  from {
+    background-position: -62% 0;
+  }
+  to {
+    background-position: 162% 0;
+  }
+}
+
+.player-overlay {
+  background: transparent;
+}
+
+.player-backdrop {
+  position: absolute;
+  inset: 0;
+  background: rgba(3, 7, 5, 0.62);
+  -webkit-backdrop-filter: blur(12px) saturate(0.78);
+  backdrop-filter: blur(12px) saturate(0.78);
+}
+
+.player-dialog {
+  z-index: 1;
+}
+
+.confirm-overlay {
+  position: fixed;
+  z-index: 220;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 18px;
+}
+
+.confirm-backdrop {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  border: 0;
+  border-radius: 0;
+  background: rgba(3, 7, 5, 0.62);
+  -webkit-backdrop-filter: blur(12px) saturate(0.78);
+  backdrop-filter: blur(12px) saturate(0.78);
+}
+
+.confirm-dialog {
+  position: relative;
+  z-index: 1;
+  width: min(420px, calc(100vw - 36px));
+  border: 1px solid #34443d;
+  border-radius: 16px;
+  padding: 24px;
+  background: #101613;
+  box-shadow: 0 28px 90px #000b;
+}
+
+.confirm-dialog small {
+  color: var(--mint);
+  font: 10px "DM Mono";
+  letter-spacing: 0.14em;
+}
+
+.confirm-dialog.danger small {
+  color: #ff6b72;
+}
+
+.confirm-dialog h2 {
+  margin: 9px 0 8px;
+  color: #f5f8f6;
+  font-size: 20px;
+  line-height: 1.35;
+}
+
+.confirm-dialog p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.65;
+  white-space: pre-line;
+}
+
+.confirm-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 9px;
+  margin-top: 22px;
+}
+
+.confirm-actions button {
+  min-width: 92px;
+  min-height: 42px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 0 16px;
+  font-weight: 800;
+}
+
+.confirm-cancel {
+  background: #18201c;
+  color: #d8dfdb;
+}
+
+.confirm-submit {
+  border-color: var(--lime) !important;
+  background: var(--lime);
+  color: #10130f;
+}
+
+.confirm-dialog.danger .confirm-submit {
+  border-color: #ff5b63 !important;
+  background: #ff5b63;
+  color: #fff;
+}
+
+@media (max-width: 600px) {
+  .shell {
+    display: block;
+  }
+
+  .shell aside {
+    display: none;
+  }
+
+  .shell > main {
+    padding: 18px 16px 32px;
+  }
+
+  .shell header {
+    position: relative;
+    align-items: center;
+    gap: 12px;
+    margin-bottom: 14px;
+  }
+
+  .page-title {
+    min-width: 0;
+    flex: 1;
+  }
+
+  .page-title h1 {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .mobile-menu-button {
+    position: relative;
+    display: inline-grid;
+    width: 42px;
+    height: 42px;
+    flex: none;
+    place-items: center;
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    background: var(--panel);
+    color: #fff;
+  }
+
+  .mobile-menu-button span {
+    position: absolute;
+    width: 18px;
+    height: 2px;
+    border-radius: 2px;
+    background: currentColor;
+    transition:
+      transform 0.2s cubic-bezier(0.22, 1, 0.36, 1),
+      opacity 0.16s ease;
+  }
+
+  .mobile-menu-button span:nth-child(1) {
+    transform: translateY(-6px);
+  }
+  .mobile-menu-button span:nth-child(3) {
+    transform: translateY(6px);
+  }
+  .mobile-menu-button.open span:nth-child(1) {
+    transform: rotate(45deg);
+  }
+  .mobile-menu-button.open span:nth-child(2) {
+    opacity: 0;
+  }
+  .mobile-menu-button.open span:nth-child(3) {
+    transform: rotate(-45deg);
+  }
+
+  .mobile-navigation {
+    display: block;
+    overflow: hidden;
+    margin: 0 0 18px;
+  }
+
+  .mobile-navigation > div {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 7px;
+    padding: 9px;
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    background: rgba(17, 22, 20, 0.96);
+  }
+
+  .mobile-navigation button {
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    min-height: 42px;
+    border: 0;
+    border-radius: 9px;
+    padding: 9px 11px;
+    background: transparent;
+    color: var(--muted);
+    text-align: left;
+  }
+
+  .mobile-navigation button.active {
+    background: var(--lime);
+    color: #111;
+    font-weight: 800;
+  }
+
+  .channel-list article {
+    align-items: center;
+    flex-wrap: wrap;
+  }
+
+  .channel-list article > div:nth-child(2) {
+    min-width: calc(100% - 60px);
+  }
+
+  .auto-record-toggle {
+    margin-left: 57px;
+  }
+
+  .confirm-overlay {
+    align-items: end;
+    padding: 12px;
+  }
+
+  .confirm-dialog {
+    width: 100%;
+    border-radius: 16px;
+    padding: 21px 18px 18px;
+  }
+
+  .confirm-actions button {
+    flex: 1;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .mobile-menu-button span,
+  .auto-record-toggle > i,
+  .auto-record-toggle > i::after {
+    transition-duration: 0.01ms !important;
+  }
+
+  .download-progress progress.indeterminate {
+    animation: none;
+    background: var(--mint);
+    opacity: 0.45;
+  }
+}

@@ -1,11 +1,14 @@
-import React, { useEffect, useRef, useState } from "react";
+import React, { createContext, useCallback, useContext, useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Button } from "@heroui/react";
-import { AnimatePresence, motion, useReducedMotion } from "framer-motion";
+import { AnimatePresence, MotionConfig, motion, useReducedMotion } from "framer-motion";
+import { BrowserRouter, useLocation, useNavigate } from "react-router-dom";
 import {
   Archive,
+  AudioLines,
   CircleDot,
+  Gauge,
   HardDrive,
   LayoutDashboard,
   LogOut,
@@ -24,6 +27,7 @@ import {
 } from "lucide-react";
 import "./styles.css";
 import "./player.css";
+import "./motion.css";
 
 type User = {
   id: number;
@@ -57,6 +61,137 @@ type Recording = {
 };
 
 const IN_FLIGHT_STATES = new Set(["queued", "recording", "processing"]);
+const MOTION_EASE = [0.22, 1, 0.36, 1] as const;
+
+const motionDuration = (reduceMotion: boolean | null, duration = 0.22) => (reduceMotion ? 0.001 : duration);
+
+type ConfirmOptions = {
+  title: string;
+  description?: string;
+  confirmLabel?: string;
+  cancelLabel?: string;
+  tone?: "default" | "danger";
+};
+
+type ConfirmRequest = ConfirmOptions & {
+  resolve: (confirmed: boolean) => void;
+};
+
+const ConfirmContext = createContext<((options: ConfirmOptions) => Promise<boolean>) | null>(null);
+
+function useConfirm() {
+  const confirmAction = useContext(ConfirmContext);
+  if (!confirmAction) throw new Error("ConfirmProvider가 필요합니다");
+  return confirmAction;
+}
+
+function ConfirmProvider({ children }: { children: React.ReactNode }) {
+  const [request, setRequest] = useState<ConfirmRequest | null>(null);
+  const previousRequest = useRef<ConfirmRequest | null>(null);
+  const opener = useRef<HTMLElement | null>(null);
+  const cancelButton = useRef<HTMLButtonElement>(null);
+  const dialog = useRef<HTMLElement>(null);
+  const reduceMotion = useReducedMotion();
+
+  const confirmAction = useCallback((options: ConfirmOptions) => {
+    previousRequest.current?.resolve(false);
+    const activeElement = document.activeElement as HTMLElement | null;
+    if (!activeElement?.closest(".confirm-dialog")) opener.current = activeElement;
+    return new Promise<boolean>((resolve) => {
+      const next = { ...options, resolve };
+      previousRequest.current = next;
+      setRequest(next);
+    });
+  }, []);
+
+  const settle = useCallback((confirmed: boolean) => {
+    const current = previousRequest.current;
+    if (!current) return;
+    previousRequest.current = null;
+    setRequest(null);
+    current.resolve(confirmed);
+  }, []);
+
+  useEffect(() => {
+    if (!request) return;
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    cancelButton.current?.focus();
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        settle(false);
+        return;
+      }
+      if (event.key !== "Tab" || !dialog.current) return;
+      const buttons = Array.from(dialog.current.querySelectorAll<HTMLButtonElement>("button:not([disabled])"));
+      if (!buttons.length) return;
+      const first = buttons[0];
+      const last = buttons[buttons.length - 1];
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => {
+      document.body.style.overflow = previousOverflow;
+      window.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [request, settle]);
+
+  return (
+    <ConfirmContext.Provider value={confirmAction}>
+      {children}
+      <AnimatePresence
+        onExitComplete={() => {
+          opener.current?.focus();
+          opener.current = null;
+        }}
+      >
+        {request && (
+          <motion.div className="confirm-overlay" key="confirm-dialog">
+            <motion.div
+              className="confirm-backdrop"
+              aria-hidden="true"
+              onClick={() => settle(false)}
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              transition={{ duration: motionDuration(reduceMotion, 0.18), ease: MOTION_EASE }}
+            />
+            <motion.section
+              ref={dialog}
+              className={`confirm-dialog ${request.tone === "danger" ? "danger" : ""}`}
+              role="alertdialog"
+              aria-modal="true"
+              aria-labelledby="confirm-dialog-title"
+              aria-describedby={request.description ? "confirm-dialog-description" : undefined}
+              initial={reduceMotion ? false : { opacity: 0, scale: 0.97, y: 8 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={reduceMotion ? { opacity: 0 } : { opacity: 0, scale: 0.98, y: 4 }}
+              transition={{ duration: motionDuration(reduceMotion, 0.22), ease: MOTION_EASE }}
+            >
+              <small>{request.tone === "danger" ? "DESTRUCTIVE ACTION" : "CONFIRM ACTION"}</small>
+              <h2 id="confirm-dialog-title">{request.title}</h2>
+              {request.description && <p id="confirm-dialog-description">{request.description}</p>}
+              <div className="confirm-actions">
+                <button ref={cancelButton} type="button" className="confirm-cancel" onClick={() => settle(false)}>
+                  {request.cancelLabel || "취소"}
+                </button>
+                <button type="button" className="confirm-submit" onClick={() => settle(true)}>
+                  {request.confirmLabel || "확인"}
+                </button>
+              </div>
+            </motion.section>
+          </motion.div>
+        )}
+      </AnimatePresence>
+    </ConfirmContext.Provider>
+  );
+}
 
 /** Whether a query payload still contains work that needs live updates. */
 function hasActiveWork(data: unknown): boolean {
@@ -130,9 +265,12 @@ function Auth({ setup }: { setup: boolean }) {
   const [invite, setInvite] = useState("");
   const [register, setRegister] = useState(false);
   const [error, setError] = useState("");
+  const [submitting, setSubmitting] = useState(false);
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (submitting) return;
     setError("");
+    setSubmitting(true);
     try {
       await api(setup ? "/api/auth/setup" : register ? "/api/auth/register" : "/api/auth/login", {
         method: "POST",
@@ -142,9 +280,10 @@ function Auth({ setup }: { setup: boolean }) {
           ...(register ? { invite } : {}),
         }),
       });
-      location.reload();
+      window.location.reload();
     } catch (e) {
       setError((e as Error).message);
+      setSubmitting(false);
     }
   };
   return (
@@ -188,8 +327,8 @@ function Auth({ setup }: { setup: boolean }) {
           </label>
         )}
         {error && <p className="error">{error}</p>}
-        <Button type="submit" className="primary">
-          {setup ? "아카이브 시작" : register ? "계정 만들기" : "로그인"}
+        <Button type="submit" className="primary" isDisabled={submitting} aria-busy={submitting}>
+          {submitting ? "확인 중" : setup ? "아카이브 시작" : register ? "계정 만들기" : "로그인"}
         </Button>
         {!setup && (
           <button
@@ -215,12 +354,12 @@ function PageTransition({ page, children }: { page: string; children: React.Reac
       <motion.div
         className="page-transition"
         key={page}
-        initial={reduceMotion ? false : { opacity: 0, y: 14, filter: "blur(4px)" }}
-        animate={{ opacity: 1, y: 0, filter: "blur(0px)" }}
-        exit={reduceMotion ? { opacity: 1 } : { opacity: 0, y: -8, filter: "blur(3px)" }}
+        initial={reduceMotion ? false : { opacity: 0, y: 10 }}
+        animate={{ opacity: 1, y: 0 }}
+        exit={reduceMotion ? { opacity: 1 } : { opacity: 0, y: -6 }}
         transition={{
-          duration: reduceMotion ? 0 : 0.24,
-          ease: [0.22, 1, 0.36, 1],
+          duration: motionDuration(reduceMotion, 0.22),
+          ease: MOTION_EASE,
         }}
       >
         {children}
@@ -230,8 +369,13 @@ function PageTransition({ page, children }: { page: string; children: React.Reac
 }
 
 function Shell({ user }: { user: User }) {
-  const [tab, setTab] = useState("dashboard");
+  const location = useLocation();
+  const navigate = useNavigate();
+  const tab = location.pathname.split("/").filter(Boolean)[0] || "dashboard";
   const [playing, setPlaying] = useState<Recording | null>(null);
+  const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+  const playerOpener = useRef<HTMLElement | null>(null);
+  const reduceMotion = useReducedMotion();
   const nav = [
     { id: "dashboard", label: "대시보드", icon: LayoutDashboard },
     { id: "channels", label: "내 채널", icon: Radio },
@@ -239,6 +383,20 @@ function Shell({ user }: { user: User }) {
     { id: "settings", label: "설정", icon: Settings },
     ...(user.role === "admin" ? [{ id: "admin", label: "관리", icon: Shield }] : []),
   ];
+  const currentTab = nav.some((item) => item.id === tab) ? tab : "dashboard";
+  const openPlayer = (recording: Recording) => {
+    playerOpener.current = document.activeElement as HTMLElement | null;
+    setPlaying(recording);
+  };
+  const closePlayer = () => setPlaying(null);
+  const goTo = (id: string) => {
+    setPlaying(null);
+    setMobileMenuOpen(false);
+    navigate(id === "dashboard" ? "/" : `/${id}`);
+  };
+  useEffect(() => {
+    if (currentTab !== tab) navigate("/", { replace: true });
+  }, [currentTab, navigate, tab]);
   return (
     <div className="shell">
       <aside>
@@ -247,14 +405,7 @@ function Shell({ user }: { user: User }) {
         </div>
         <nav>
           {nav.map((x) => (
-            <button
-              className={tab === x.id ? "active" : ""}
-              onClick={() => {
-                setPlaying(null);
-                setTab(x.id);
-              }}
-              key={x.id}
-            >
+            <button className={currentTab === x.id ? "active" : ""} onClick={() => goTo(x.id)} key={x.id}>
               <x.icon size={18} />
               {x.label}
             </button>
@@ -268,38 +419,83 @@ function Shell({ user }: { user: User }) {
           </p>
           <button
             title="로그아웃"
-            onClick={() => api("/api/auth/logout", { method: "POST" }).then(() => location.reload())}
+            onClick={() => api("/api/auth/logout", { method: "POST" }).then(() => window.location.reload())}
           >
             <LogOut size={17} />
           </button>
         </div>
       </aside>
       <main>
-        <PageTransition page={tab}>
-          <header>
+        <header>
+          <button
+            className={`mobile-menu-button ${mobileMenuOpen ? "open" : ""}`}
+            type="button"
+            aria-label={mobileMenuOpen ? "메뉴 닫기" : "메뉴 열기"}
+            aria-expanded={mobileMenuOpen}
+            aria-controls="mobile-navigation"
+            onClick={() => setMobileMenuOpen((open) => !open)}
+          >
+            <span />
+            <span />
+            <span />
+          </button>
+          <div className="page-title">
             <div>
               <small>PERSONAL STREAM VAULT</small>
-              <h1>{nav.find((n) => n.id === tab)?.label}</h1>
+              <h1>{nav.find((n) => n.id === currentTab)?.label}</h1>
             </div>
-            <div className={`cookie ${user.cookie_status}`}>
-              <CircleDot size={15} /> 인증 쿠키 {user.cookie_status === "valid" ? "연결됨" : "필요"}
-            </div>
-          </header>
-          {tab === "dashboard" ? (
-            <Dashboard user={user} onPlay={setPlaying} />
-          ) : tab === "channels" ? (
+          </div>
+          <div className={`cookie ${user.cookie_status}`}>
+            <CircleDot size={15} /> 인증 쿠키 {user.cookie_status === "valid" ? "연결됨" : "필요"}
+          </div>
+        </header>
+        <AnimatePresence initial={false}>
+          {mobileMenuOpen && (
+            <motion.nav
+              id="mobile-navigation"
+              className="mobile-navigation"
+              initial={{ height: 0, opacity: 0, y: -8 }}
+              animate={{ height: "auto", opacity: 1, y: 0 }}
+              exit={{ height: 0, opacity: 0, y: -8 }}
+              transition={{ duration: motionDuration(reduceMotion, 0.28), ease: MOTION_EASE }}
+            >
+              <div>
+                {nav.map((item) => (
+                  <button
+                    type="button"
+                    className={currentTab === item.id ? "active" : ""}
+                    onClick={() => goTo(item.id)}
+                    key={item.id}
+                  >
+                    <item.icon size={18} />
+                    {item.label}
+                  </button>
+                ))}
+              </div>
+            </motion.nav>
+          )}
+        </AnimatePresence>
+        <PageTransition page={location.pathname}>
+          {currentTab === "dashboard" ? (
+            <Dashboard user={user} onPlay={openPlayer} />
+          ) : currentTab === "channels" ? (
             <Channels />
-          ) : tab === "library" ? (
-            <Library user={user} onPlay={setPlaying} />
-          ) : tab === "settings" ? (
+          ) : currentTab === "library" ? (
+            <Library user={user} onPlay={openPlayer} />
+          ) : currentTab === "settings" ? (
             <SettingsPage />
           ) : (
             <Admin />
           )}
         </PageTransition>
       </main>
-      <AnimatePresence>
-        {playing && <PlayerModal recording={playing} onClose={() => setPlaying(null)} />}
+      <AnimatePresence
+        onExitComplete={() => {
+          playerOpener.current?.focus();
+          playerOpener.current = null;
+        }}
+      >
+        {playing && <PlayerModal recording={playing} onClose={closePlayer} />}
       </AnimatePresence>
     </div>
   );
@@ -345,18 +541,62 @@ function Stat({
   live?: boolean;
 }) {
   return (
-    <article className="stat">
+    <motion.article className="stat" layout="position">
       <span className={live ? "live" : ""}>
         <Icon size={20} />
       </span>
       <small>{label}</small>
       <strong>{value}</strong>
-    </article>
+    </motion.article>
+  );
+}
+
+function AutoRecordToggle({ subscription }: { subscription: Subscription }) {
+  const qc = useQueryClient();
+  const mutation = useMutation({
+    mutationFn: (enabled: boolean) =>
+      api<Subscription>(`/api/subscriptions/${subscription.id}`, {
+        method: "PATCH",
+        body: JSON.stringify({ auto_record: enabled }),
+      }),
+    onMutate: async (enabled) => {
+      await qc.cancelQueries({ queryKey: ["subs"] });
+      const previous = qc.getQueryData<Subscription[]>(["subs"]);
+      qc.setQueryData<Subscription[]>(["subs"], (current = []) =>
+        current.map((item) => (item.id === subscription.id ? { ...item, auto_record: enabled } : item)),
+      );
+      return { previous };
+    },
+    onError: (_error, _enabled, context) => {
+      if (context?.previous) qc.setQueryData(["subs"], context.previous);
+    },
+    onSuccess: (confirmed) => {
+      qc.setQueryData<Subscription[]>(["subs"], (current = []) =>
+        current.map((item) => (item.id === confirmed.id ? { ...item, ...confirmed } : item)),
+      );
+    },
+    onSettled: () => qc.invalidateQueries({ queryKey: ["subs"] }),
+  });
+  return (
+    <button
+      type="button"
+      role="switch"
+      className="auto-record-toggle"
+      aria-checked={subscription.auto_record}
+      aria-label={`${subscription.name} 자동 녹화`}
+      aria-busy={mutation.isPending}
+      disabled={mutation.isPending}
+      onClick={() => mutation.mutate(!subscription.auto_record)}
+    >
+      <span>{subscription.auto_record ? "자동 녹화 켜짐" : "자동 녹화 꺼짐"}</span>
+      <i aria-hidden="true" />
+    </button>
   );
 }
 
 function Channels() {
   const qc = useQueryClient();
+  const confirmAction = useConfirm();
   const [channel, setChannel] = useState("");
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
@@ -378,7 +618,14 @@ function Channels() {
       qc.invalidateQueries({ queryKey: ["subs"] });
       if (!result?.live) return;
       const label = result.live_title ? `"${result.live_title}"` : `${result.name} 채널`;
-      if (!confirm(`${label} 방송이 진행 중입니다. 지금부터 바로 녹화할까요?`)) return;
+      if (
+        !(await confirmAction({
+          title: "지금부터 녹화할까요?",
+          description: `${label} 방송이 진행 중입니다. 구독 시점부터 바로 녹화를 시작할 수 있습니다.`,
+          confirmLabel: "녹화 시작",
+        }))
+      )
+        return;
       try {
         await api("/api/subscriptions/start-live", {
           method: "POST",
@@ -401,6 +648,7 @@ function Channels() {
         className="add-bar"
         onSubmit={(e) => {
           e.preventDefault();
+          if (add.isPending) return;
           add.mutate();
         }}
       >
@@ -413,42 +661,93 @@ function Channels() {
           value={channel}
           onChange={(e) => setChannel(e.target.value)}
         />
-        <button className="primary">
-          <Plus size={17} /> 구독
+        <button className="primary" disabled={add.isPending} aria-busy={add.isPending}>
+          <Plus size={17} /> {add.isPending ? "확인 중" : "구독"}
         </button>
       </form>
-      {error && <p className="error">{error}</p>}
-      {notice && <p className="notice">{notice}</p>}
-      <div className="channel-list">
-        {data.map((ch) => (
-          <article key={ch.id}>
-            <div className="avatar">{ch.image ? <img src={ch.image} alt="" /> : ch.name[0]}</div>
-            <div>
-              <b>{ch.name}</b>
-              <small>{ch.channel_id}</small>
-            </div>
-            <span className={ch.live ? "on" : ""}>{ch.live ? "LIVE" : "OFFLINE"}</span>
-            <button
-              onClick={async () => {
-                if (confirm("기존 영상도 라이브러리에서 제거할까요?"))
-                  await api(`/api/subscriptions/${ch.id}/unsubscribe`, {
-                    method: "POST",
-                    body: JSON.stringify({ remove_recordings: true }),
-                  });
-                else
-                  await api(`/api/subscriptions/${ch.id}/unsubscribe`, {
-                    method: "POST",
-                    body: JSON.stringify({ remove_recordings: false }),
-                  });
-                qc.invalidateQueries({ queryKey: ["subs"] });
-              }}
+      <AnimatePresence initial={false} mode="popLayout">
+        {error && (
+          <motion.p
+            key="channel-error"
+            className="error"
+            layout
+            initial={{ opacity: 0, y: 8 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0 }}
+          >
+            {error}
+          </motion.p>
+        )}
+        {notice && (
+          <motion.p
+            key="channel-notice"
+            className="notice"
+            layout
+            initial={{ opacity: 0, y: 8 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0 }}
+          >
+            {notice}
+          </motion.p>
+        )}
+      </AnimatePresence>
+      <motion.div className="channel-list" layout>
+        <AnimatePresence initial={false} mode="popLayout">
+          {data.map((ch) => (
+            <motion.article
+              key={ch.id}
+              layout
+              initial={{ opacity: 0, y: 9 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.98 }}
+              transition={{ duration: 0.2, ease: MOTION_EASE }}
             >
-              구독 해제
-            </button>
-          </article>
-        ))}
-      </div>
-      {!data.length && <Empty text="자동 녹화를 시작할 채널을 구독하세요." />}
+              <div className="avatar">{ch.image ? <img src={ch.image} alt="" /> : ch.name[0]}</div>
+              <div>
+                <b>{ch.name}</b>
+                <small>{ch.channel_id}</small>
+              </div>
+              <span className={ch.live ? "on" : ""}>{ch.live ? "LIVE" : "OFFLINE"}</span>
+              <AutoRecordToggle subscription={ch} />
+              <button
+                onClick={async () => {
+                  if (
+                    !(await confirmAction({
+                      title: `${ch.name} 구독을 해제할까요?`,
+                      description:
+                        "자동 녹화가 중단되며, 기존 영상은 다음 단계에서 유지하거나 함께 제거할 수 있습니다.",
+                      confirmLabel: "구독 해제",
+                      tone: "danger",
+                    }))
+                  )
+                    return;
+                  const removeRecordings = await confirmAction({
+                    title: "기존 영상도 제거할까요?",
+                    description: "이 채널에서 저장한 기존 영상을 함께 제거할지 선택하세요.",
+                    confirmLabel: "영상도 제거",
+                    cancelLabel: "영상은 유지",
+                    tone: "danger",
+                  });
+                  await api(`/api/subscriptions/${ch.id}/unsubscribe`, {
+                    method: "POST",
+                    body: JSON.stringify({ remove_recordings: removeRecordings }),
+                  });
+                  qc.invalidateQueries({ queryKey: ["subs"] });
+                }}
+              >
+                구독 해제
+              </button>
+            </motion.article>
+          ))}
+        </AnimatePresence>
+      </motion.div>
+      <AnimatePresence initial={false}>
+        {!data.length && (
+          <motion.div key="channels-empty" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
+            <Empty text="자동 녹화를 시작할 채널을 구독하세요." />
+          </motion.div>
+        )}
+      </AnimatePresence>
     </>
   );
 }
@@ -532,12 +831,82 @@ function ArchivePlayer({
 }) {
   const frame = useRef<HTMLDivElement>(null);
   const video = useRef<HTMLVideoElement>(null);
+  const audioGraph = useRef<{
+    context: AudioContext;
+    compressor: DynamicsCompressorNode;
+    makeup: GainNode;
+    limiter: DynamicsCompressorNode;
+  } | null>(null);
   const [playing, setPlaying] = useState(false);
   const [current, setCurrent] = useState(0);
   const [duration, setDuration] = useState(recording.duration_seconds || 0);
   const [volume, setVolume] = useState(1);
   const [muted, setMuted] = useState(false);
   const [waiting, setWaiting] = useState(true);
+  const [boostDb, setBoostDb] = useState(0);
+  const [ceilingDb, setCeilingDb] = useState(-1);
+  const [compression, setCompression] = useState(0);
+
+  const ensureAudioGraph = () => {
+    if (audioGraph.current) {
+      if (audioGraph.current.context.state === "suspended") void audioGraph.current.context.resume();
+      return audioGraph.current;
+    }
+    if (!video.current) return null;
+    const AudioContextConstructor =
+      window.AudioContext ||
+      (window as typeof window & { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+    if (!AudioContextConstructor) return null;
+    const context = new AudioContextConstructor();
+    const source = context.createMediaElementSource(video.current);
+    const compressor = context.createDynamicsCompressor();
+    const makeup = context.createGain();
+    const limiter = context.createDynamicsCompressor();
+    source.connect(compressor).connect(makeup).connect(limiter).connect(context.destination);
+    audioGraph.current = { context, compressor, makeup, limiter };
+    void context.resume();
+    return audioGraph.current;
+  };
+
+  const applyAudioEffects = (nextBoost: number, nextCeiling: number, nextCompression: number) => {
+    const graph = ensureAudioGraph();
+    if (!graph) return;
+    const now = graph.context.currentTime;
+    const amount = Math.max(0, Math.min(100, nextCompression)) / 100;
+    graph.compressor.threshold.setTargetAtTime(amount ? -8 - amount * 34 : 0, now, 0.02);
+    graph.compressor.knee.setTargetAtTime(amount * 24, now, 0.02);
+    graph.compressor.ratio.setTargetAtTime(1 + amount * 11, now, 0.02);
+    graph.compressor.attack.setTargetAtTime(0.004 + amount * 0.012, now, 0.02);
+    graph.compressor.release.setTargetAtTime(0.18 + amount * 0.24, now, 0.02);
+    graph.makeup.gain.setTargetAtTime(10 ** (nextBoost / 20), now, 0.02);
+    graph.limiter.threshold.setTargetAtTime(nextBoost > 0 ? nextCeiling : 0, now, 0.02);
+    graph.limiter.knee.setTargetAtTime(0, now, 0.02);
+    graph.limiter.ratio.setTargetAtTime(nextBoost > 0 ? 20 : 1, now, 0.02);
+    graph.limiter.attack.setTargetAtTime(0.002, now, 0.02);
+    graph.limiter.release.setTargetAtTime(0.12, now, 0.02);
+  };
+
+  const changeBoost = (value: number) => {
+    setBoostDb(value);
+    applyAudioEffects(value, ceilingDb, compression);
+  };
+  const changeCeiling = (value: number) => {
+    setCeilingDb(value);
+    applyAudioEffects(boostDb, value, compression);
+  };
+  const changeCompression = (value: number) => {
+    setCompression(value);
+    applyAudioEffects(boostDb, ceilingDb, value);
+  };
+
+  useEffect(
+    () => () => {
+      const context = audioGraph.current?.context;
+      audioGraph.current = null;
+      if (context && context.state !== "closed") void context.close();
+    },
+    [],
+  );
   const toggle = () => {
     const element = video.current;
     if (!element) return;
@@ -628,6 +997,79 @@ function ArchivePlayer({
             onChange={(event) => changeVolume(Number(event.target.value))}
             aria-label="볼륨"
           />
+          <div className="audio-tool">
+            <button
+              type="button"
+              className={boostDb > 0 ? "active" : ""}
+              onClick={() => changeBoost(boostDb > 0 ? 0 : 6)}
+              aria-pressed={boostDb > 0}
+              aria-label={boostDb > 0 ? "오디오 최대화 끄기" : "오디오 최대화 켜기"}
+            >
+              <Gauge />
+            </button>
+            <div className="audio-popover" role="group" aria-label="오디오 최대화 설정">
+              <header>
+                <b>오디오 최대화</b>
+                <output>{boostDb > 0 ? `+${boostDb.toFixed(1)} dB` : "꺼짐"}</output>
+              </header>
+              <label>
+                <span>증폭</span>
+                <input
+                  type="range"
+                  min="0"
+                  max="12"
+                  step="0.5"
+                  value={boostDb}
+                  onChange={(event) => changeBoost(Number(event.target.value))}
+                  aria-label="오디오 최대화 증폭"
+                />
+              </label>
+              <label>
+                <span>
+                  피크 목표 <output>{ceilingDb.toFixed(1)} dB</output>
+                </span>
+                <input
+                  type="range"
+                  min="-6"
+                  max="0"
+                  step="0.5"
+                  value={ceilingDb}
+                  onChange={(event) => changeCeiling(Number(event.target.value))}
+                  aria-label="최대 피크 목표"
+                />
+              </label>
+            </div>
+          </div>
+          <div className="audio-tool">
+            <button
+              type="button"
+              className={compression > 0 ? "active" : ""}
+              onClick={() => changeCompression(compression > 0 ? 0 : 45)}
+              aria-pressed={compression > 0}
+              aria-label={compression > 0 ? "오디오 컴프레서 끄기" : "오디오 컴프레서 켜기"}
+            >
+              <AudioLines />
+            </button>
+            <div className="audio-popover compressor-popover" role="group" aria-label="오디오 컴프레서 설정">
+              <header>
+                <b>컴프레서</b>
+                <output>{compression > 0 ? `${compression}%` : "꺼짐"}</output>
+              </header>
+              <label>
+                <span>강도</span>
+                <input
+                  type="range"
+                  min="0"
+                  max="100"
+                  step="5"
+                  value={compression}
+                  onChange={(event) => changeCompression(Number(event.target.value))}
+                  aria-label="컴프레서 강도"
+                />
+              </label>
+              <p>큰 소리는 누르고 작은 소리는 더 또렷하게 유지합니다.</p>
+            </div>
+          </div>
           <span>
             {mediaTime(current)} / {mediaTime(duration)}
           </span>
@@ -642,7 +1084,9 @@ function ArchivePlayer({
 
 function PlayerModal({ recording, onClose }: { recording: Recording; onClose: () => void }) {
   const dialog = useRef<HTMLElement>(null);
+  const closeButton = useRef<HTMLButtonElement>(null);
   const resizing = useRef(false);
+  const reduceMotion = useReducedMotion();
   const [aspectRatio, setAspectRatio] = useState(16 / 9);
   const initialSize = () => ({
     width: Math.min(1000, window.innerWidth - 24),
@@ -664,14 +1108,37 @@ function PlayerModal({ recording, onClose }: { recording: Recording; onClose: ()
         width: Math.min(current.width, window.innerWidth - 24),
         height: Math.min(current.height, window.innerHeight - 24),
       }));
-    const close = (event: KeyboardEvent) => event.key === "Escape" && onClose();
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        onClose();
+        return;
+      }
+      if (event.key !== "Tab" || !dialog.current) return;
+      const focusable = Array.from(
+        dialog.current.querySelectorAll<HTMLElement>(
+          'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
+        ),
+      ).filter((element) => !element.hasAttribute("hidden"));
+      if (!focusable.length) return;
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
+    };
+    const previousOverflow = document.body.style.overflow;
     document.body.style.overflow = "hidden";
+    closeButton.current?.focus();
     window.addEventListener("resize", clamp);
-    window.addEventListener("keydown", close);
+    window.addEventListener("keydown", handleKeyDown);
     return () => {
-      document.body.style.overflow = "";
+      document.body.style.overflow = previousOverflow;
       window.removeEventListener("resize", clamp);
-      window.removeEventListener("keydown", close);
+      window.removeEventListener("keydown", handleKeyDown);
     };
   }, [onClose]);
 
@@ -775,36 +1242,38 @@ function PlayerModal({ recording, onClose }: { recording: Recording; onClose: ()
     window.addEventListener("pointercancel", stop, { once: true });
   };
 
-  const closeFromBackdrop = (event: React.PointerEvent<HTMLDivElement>) => {
-    if (event.target === event.currentTarget && !resizing.current) onClose();
-  };
-
   return (
-    <motion.div
-      className="player-overlay"
-      onPointerDown={closeFromBackdrop}
-      initial={{ opacity: 0 }}
-      animate={{ opacity: 1 }}
-      exit={{ opacity: 0 }}
-    >
+    <motion.div className="player-overlay">
+      <motion.div
+        className="player-backdrop"
+        aria-hidden="true"
+        onClick={() => !resizing.current && onClose()}
+        initial={{ opacity: 0 }}
+        animate={{ opacity: 1 }}
+        exit={{ opacity: 0 }}
+        transition={{ duration: motionDuration(reduceMotion, 0.2), ease: MOTION_EASE }}
+      />
       <motion.section
         ref={dialog}
         className="player-dialog"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="player-dialog-title"
         style={{ width: dialogSize.width, height: dialogSize.height }}
         onClick={(event) => event.stopPropagation()}
-        initial={{ opacity: 0, scale: 0.97, y: 12 }}
-        animate={{ opacity: 1, scale: 1, y: 0 }}
-        exit={{ opacity: 0, scale: 0.98, y: 8 }}
-        transition={{ type: "spring", stiffness: 350, damping: 31 }}
+        initial={reduceMotion ? false : { opacity: 0, scale: 0.97 }}
+        animate={{ opacity: 1, scale: 1 }}
+        exit={reduceMotion ? { opacity: 0 } : { opacity: 0, scale: 0.98 }}
+        transition={{ duration: motionDuration(reduceMotion, 0.22), ease: MOTION_EASE }}
       >
         <div className="player-dialog-head">
           <div>
             <small>
               {recording.channel} · {typeLabel(recording.type)}
             </small>
-            <strong>{recording.title}</strong>
+            <strong id="player-dialog-title">{recording.title}</strong>
           </div>
-          <button onClick={onClose} aria-label="플레이어 닫기">
+          <button ref={closeButton} onClick={onClose} aria-label="플레이어 닫기">
             ✕
           </button>
         </div>
@@ -835,164 +1304,226 @@ function RecordingGrid({
   canPurge?: boolean;
 }) {
   const qc = useQueryClient();
+  const confirmAction = useConfirm();
+  const [pendingIds, setPendingIds] = useState<Set<number>>(() => new Set());
+  const setPending = (id: number, pending: boolean) =>
+    setPendingIds((current) => {
+      const next = new Set(current);
+      if (pending) next.add(id);
+      else next.delete(id);
+      return next;
+    });
   const cancel = async (r: Recording) => {
-    if (confirm(r.type === "live" ? "녹화를 중단할까요?" : "다운로드를 취소할까요?")) {
-      await api(`/api/recordings/${r.id}/cancel`, { method: "POST" });
-      qc.invalidateQueries({ queryKey: ["recordings"] });
+    if (
+      await confirmAction({
+        title: r.type === "live" ? "녹화를 중단할까요?" : "다운로드를 취소할까요?",
+        description: "현재까지 저장된 데이터는 작업 상태에 따라 일부 남을 수 있습니다.",
+        confirmLabel: r.type === "live" ? "녹화 중단" : "다운로드 취소",
+        tone: "danger",
+      })
+    ) {
+      setPending(r.id, true);
+      try {
+        await api(`/api/recordings/${r.id}/cancel`, { method: "POST" });
+        qc.setQueryData<Recording[]>(["recordings"], (current = []) =>
+          current.map((item) => (item.id === r.id ? { ...item, state: "canceled" } : item)),
+        );
+        await qc.invalidateQueries({ queryKey: ["recordings"] });
+      } finally {
+        setPending(r.id, false);
+      }
+    }
+  };
+  const remove = async (r: Recording) => {
+    if (
+      !(await confirmAction({
+        title: "내 라이브러리에서 제거할까요?",
+        description: "내 목록에서만 사라지며 다른 사용자의 아카이브에는 영향을 주지 않습니다.",
+        confirmLabel: "목록에서 제거",
+        tone: "danger",
+      }))
+    )
+      return;
+    setPending(r.id, true);
+    try {
+      await api(`/api/recordings/${r.id}`, { method: "DELETE" });
+      qc.setQueryData<Recording[]>(["recordings"], (current = []) => current.filter((item) => item.id !== r.id));
+    } finally {
+      setPending(r.id, false);
+    }
+  };
+  const purge = async (r: Recording) => {
+    if (
+      !(await confirmAction({
+        title: `“${r.title}”을 영구 삭제할까요?`,
+        description: "모든 사용자의 라이브러리에서 제거되고 영상 파일도 삭제됩니다. 이 작업은 되돌릴 수 없습니다.",
+        confirmLabel: "영구 삭제",
+        tone: "danger",
+      }))
+    )
+      return;
+    setPending(r.id, true);
+    try {
+      await api(`/api/admin/recordings/${r.id}`, { method: "DELETE" });
+      qc.setQueryData<Recording[]>(["recordings"], (current = []) => current.filter((item) => item.id !== r.id));
+      qc.invalidateQueries({ queryKey: ["admin"] });
+    } finally {
+      setPending(r.id, false);
     }
   };
   return (
-    <div className="recording-grid">
-      {recordings.map((r) => (
-        <article key={r.id}>
-          <div
-            className={`thumb ${r.state === "completed" ? "viewable" : ""}`}
-            style={r.thumbnail ? { backgroundImage: `url(${r.thumbnail})` } : {}}
-            onClick={() => r.state === "completed" && onPlay(r)}
-            onKeyDown={(event) => {
-              if (r.state === "completed" && (event.key === "Enter" || event.key === " ")) {
-                event.preventDefault();
-                onPlay(r);
-              }
-            }}
-            role={r.state === "completed" ? "button" : undefined}
-            tabIndex={r.state === "completed" ? 0 : undefined}
-            aria-label={r.state === "completed" ? `${r.title} 재생` : undefined}
-          >
-            <span className={r.state}>
-              {typeLabel(r.type)} · {stateLabel(r)}
-            </span>
-            {r.state === "completed" && (
-              <button
-                className="play"
-                onClick={(event) => {
-                  event.stopPropagation();
-                  onPlay(r);
+    <motion.div className="recording-grid" layout>
+      <AnimatePresence initial={false} mode="popLayout">
+        {recordings.map((r) => {
+          const progressValue =
+            r.state === "processing"
+              ? r.encoding_progress != null && r.encoding_progress > 0
+                ? r.encoding_progress
+                : undefined
+              : r.progress;
+          return (
+            <motion.article
+              key={r.id}
+              layout
+              initial={{ opacity: 0, y: 9 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.98 }}
+              whileHover={{ y: -3 }}
+              transition={{ duration: 0.2, ease: MOTION_EASE }}
+            >
+              <div
+                className={`thumb ${r.state === "completed" ? "viewable" : ""}`}
+                style={r.thumbnail ? { backgroundImage: `url(${r.thumbnail})` } : {}}
+                onClick={() => r.state === "completed" && onPlay(r)}
+                onKeyDown={(event) => {
+                  if (r.state === "completed" && (event.key === "Enter" || event.key === " ")) {
+                    event.preventDefault();
+                    onPlay(r);
+                  }
                 }}
-                aria-label="영상 재생"
+                role={r.state === "completed" ? "button" : undefined}
+                tabIndex={r.state === "completed" ? 0 : undefined}
+                aria-label={r.state === "completed" ? `${r.title} 재생` : undefined}
               >
-                ▶
-              </button>
-            )}
-          </div>
-          <div className="recording-meta">
-            <small>{r.channel}</small>
-            <h3>{r.title}</h3>
-            {(r.state === "recording" || r.state === "queued" || r.state === "processing") && (
-              <div className={`download-progress ${r.type === "live" ? "live-recording-progress" : ""}`}>
-                {r.type === "live" && r.state !== "processing" && (
-                  <div className="live-recording-status">
-                    <div>
-                      <span className={r.recording_active && r.speed_bps > 0 ? "healthy" : "connecting"}>
-                        {r.state === "queued"
-                          ? "녹화 대기 중"
-                          : r.recording_active && r.speed_bps > 0
-                            ? "실제 녹화 중"
-                            : r.recording_active
-                              ? "스트림 연결 중"
-                              : "프로세스 확인 중"}
-                      </span>
-                      <em aria-hidden="true">|</em>
-                      <strong>{mediaTime(r.recorded_seconds || 0)}</strong>
-                    </div>
+                <span className={r.state}>
+                  {typeLabel(r.type)} · {stateLabel(r)}
+                </span>
+                {r.state === "completed" && (
+                  <button
+                    className="play"
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      onPlay(r);
+                    }}
+                    aria-label="영상 재생"
+                  >
+                    ▶
+                  </button>
+                )}
+              </div>
+              <div className="recording-meta">
+                <small>{r.channel}</small>
+                <h3>{r.title}</h3>
+                {(r.state === "recording" || r.state === "queued" || r.state === "processing") && (
+                  <div className={`download-progress ${r.type === "live" ? "live-recording-progress" : ""}`}>
+                    {r.type === "live" && r.state !== "processing" && (
+                      <div className="live-recording-status">
+                        <div>
+                          <span className={r.recording_active && r.speed_bps > 0 ? "healthy" : "connecting"}>
+                            {r.state === "queued"
+                              ? "녹화 대기 중"
+                              : r.recording_active && r.speed_bps > 0
+                                ? "실제 녹화 중"
+                                : r.recording_active
+                                  ? "스트림 연결 중"
+                                  : "프로세스 확인 중"}
+                          </span>
+                          <em aria-hidden="true">|</em>
+                          <strong>{mediaTime(r.recorded_seconds || 0)}</strong>
+                        </div>
+                        <div>
+                          <span>
+                            {size(r.size)} 저장됨
+                            {r.speed_bps > 0 ? ` · ${speed(r.speed_bps)}` : ""}
+                          </span>
+                        </div>
+                        <div className={`live-recording-meter ${r.recording_active ? "writing" : ""}`}>
+                          <i />
+                        </div>
+                      </div>
+                    )}
                     <div>
                       <span>
-                        {size(r.size)} 저장됨
-                        {r.speed_bps > 0 ? ` · ${speed(r.speed_bps)}` : ""}
+                        {r.state === "processing"
+                          ? r.encoding_state === "finalizing"
+                            ? "MP4 마무리 중"
+                            : r.encoding_state === "uploading"
+                              ? "결과 전송 완료"
+                              : r.encoding_progress != null && r.encoding_progress > 0
+                                ? `HEVC 인코딩 ${r.encoding_progress.toFixed(1)}%`
+                                : `HEVC 인코딩 중 · ${mediaTime(r.encoding_processed_seconds || 0)}`
+                          : r.progress != null
+                            ? `${r.progress.toFixed(1)}%`
+                            : "연결 중"}
+                      </span>
+                      <span>
+                        {size(r.size)}
+                        {r.total_size ? ` / ${size(r.total_size)}` : ""}
                       </span>
                     </div>
-                    <div className={`live-recording-meter ${r.recording_active ? "writing" : ""}`}>
-                      <i />
+                    <progress
+                      max="100"
+                      className={progressValue == null ? "indeterminate" : undefined}
+                      value={progressValue}
+                      aria-label={progressValue == null ? "진행 중" : `진행률 ${progressValue.toFixed(1)}%`}
+                    />
+                    <div className="download-eta">
+                      <span>
+                        {r.state === "processing"
+                          ? r.encoding_state === "finalizing"
+                            ? "컨트롤러 처리 중"
+                            : r.encoding_speed && r.encoding_speed > 0
+                              ? `${r.encoding_speed.toFixed(2)}x 속도`
+                              : "인코더 준비 중"
+                          : speed(r.speed_bps)}
+                      </span>
+                      <span>
+                        {r.state === "processing"
+                          ? r.encoding_state === "finalizing"
+                            ? "잠시만 기다려 주세요"
+                            : r.encoding_eta_seconds != null
+                              ? eta(r.encoding_eta_seconds)
+                              : "남은 시간 계산 중"
+                          : eta(r.eta_seconds)}
+                      </span>
                     </div>
                   </div>
                 )}
-                <div>
-                  <span>
-                    {r.state === "processing"
-                      ? r.encoding_state === "finalizing"
-                        ? "MP4 마무리 중"
-                        : r.encoding_state === "uploading"
-                          ? "결과 전송 완료"
-                          : r.encoding_progress != null && r.encoding_progress > 0
-                            ? `HEVC 인코딩 ${r.encoding_progress.toFixed(1)}%`
-                            : `HEVC 인코딩 중 · ${mediaTime(r.encoding_processed_seconds || 0)}`
-                      : r.progress != null
-                        ? `${r.progress.toFixed(1)}%`
-                        : "연결 중"}
-                  </span>
-                  <span>
-                    {size(r.size)}
-                    {r.total_size ? ` / ${size(r.total_size)}` : ""}
-                  </span>
-                </div>
-                <progress max="100" value={r.state === "processing" ? (r.encoding_progress ?? 0) : (r.progress ?? 0)} />
-                <div className="download-eta">
-                  <span>
-                    {r.state === "processing"
-                      ? r.encoding_state === "finalizing"
-                        ? "컨트롤러 처리 중"
-                        : r.encoding_speed && r.encoding_speed > 0
-                          ? `${r.encoding_speed.toFixed(2)}x 속도`
-                          : "인코더 준비 중"
-                      : speed(r.speed_bps)}
-                  </span>
-                  <span>
-                    {r.state === "processing"
-                      ? r.encoding_state === "finalizing"
-                        ? "잠시만 기다려 주세요"
-                        : r.encoding_eta_seconds != null
-                          ? eta(r.encoding_eta_seconds)
-                          : "남은 시간 계산 중"
-                      : eta(r.eta_seconds)}
-                  </span>
+                <p>
+                  {new Date(r.created_at).toLocaleString("ko-KR")} · {size(r.size)}
+                </p>
+                {r.error && <p className="error">{r.error}</p>}
+                <div className="recording-actions">
+                  {(r.state === "recording" || r.state === "queued" || r.state === "processing") && (
+                    <button className="cancel" disabled={pendingIds.has(r.id)} onClick={() => cancel(r)}>
+                      {r.state === "processing" ? "인코딩 취소" : r.type === "live" ? "녹화 중단" : "다운로드 취소"}
+                    </button>
+                  )}
+                  <button disabled={pendingIds.has(r.id)} onClick={() => remove(r)}>
+                    내 기록에서 제거
+                  </button>
+                  {canPurge && !IN_FLIGHT_STATES.has(r.state) && (
+                    <button className="purge" disabled={pendingIds.has(r.id)} onClick={() => purge(r)}>
+                      <Trash2 size={13} /> 아카이브 삭제
+                    </button>
+                  )}
                 </div>
               </div>
-            )}
-            <p>
-              {new Date(r.created_at).toLocaleString("ko-KR")} · {size(r.size)}
-            </p>
-            {r.error && <p className="error">{r.error}</p>}
-            <div className="recording-actions">
-              {(r.state === "recording" || r.state === "queued" || r.state === "processing") && (
-                <button className="cancel" onClick={() => cancel(r)}>
-                  {r.state === "processing" ? "인코딩 취소" : r.type === "live" ? "녹화 중단" : "다운로드 취소"}
-                </button>
-              )}
-              <button
-                onClick={async () => {
-                  if (confirm("내 라이브러리에서 제거할까요?")) {
-                    await api(`/api/recordings/${r.id}`, { method: "DELETE" });
-                    qc.invalidateQueries({ queryKey: ["recordings"] });
-                  }
-                }}
-              >
-                내 기록에서 제거
-              </button>
-              {canPurge && !IN_FLIGHT_STATES.has(r.state) && (
-                <button
-                  className="purge"
-                  onClick={async () => {
-                    if (
-                      confirm(
-                        `“${r.title}” 아카이브를 영구 삭제할까요?\n모든 사용자에게서 제거되며 영상 파일도 삭제됩니다.`,
-                      )
-                    ) {
-                      await api(`/api/admin/recordings/${r.id}`, {
-                        method: "DELETE",
-                      });
-                      qc.invalidateQueries({ queryKey: ["recordings"] });
-                      qc.invalidateQueries({ queryKey: ["admin"] });
-                    }
-                  }}
-                >
-                  <Trash2 size={13} /> 아카이브 삭제
-                </button>
-              )}
-            </div>
-          </div>
-        </article>
-      ))}
-    </div>
+            </motion.article>
+          );
+        })}
+      </AnimatePresence>
+    </motion.div>
   );
 }
 function SettingsPage() {
@@ -1075,7 +1606,7 @@ function App() {
     queryKey: ["status"],
     queryFn: () => api<{ setup_required: boolean }>("/api/auth/status"),
   });
-  const { data: user, error } = useQuery({
+  const { data: user } = useQuery({
     queryKey: ["me"],
     queryFn: () => api<User>("/api/me"),
     retry: false,
@@ -1083,27 +1614,35 @@ function App() {
   });
   if (isLoading) return null;
   if (status?.setup_required) return <Auth setup />;
-  if (error || !user) return <Auth setup={false} />;
+  // A background auth refresh can fail briefly while the server restarts. Keep
+  // the last successful session rendered; a fresh load with no user still
+  // lands on the login screen.
+  if (!user) return <Auth setup={false} />;
   return <Shell user={user} />;
 }
+
+const queryClient = new QueryClient({
+  defaultOptions: {
+    queries: {
+      // Keep the last successful value visible while a background poll is in
+      // flight. Stable item IDs then let React update only changed content.
+      refetchInterval: (query) => (hasActiveWork(query.state.data) ? 1000 : 15000),
+      refetchIntervalInBackground: false,
+      staleTime: 800,
+    },
+  },
+});
+
 createRoot(document.getElementById("root")!).render(
   <React.StrictMode>
-    <QueryClientProvider
-      client={
-        new QueryClient({
-          defaultOptions: {
-            queries: {
-              // Poll rapidly only while something is actually in flight, and
-              // stop entirely in a background tab. An idle library of hundreds
-              // of recordings otherwise re-fetches every second for no reason.
-              refetchInterval: (query) => (hasActiveWork(query.state.data) ? 1000 : 15000),
-              refetchIntervalInBackground: false,
-            },
-          },
-        })
-      }
-    >
-      <App />
-    </QueryClientProvider>
+    <BrowserRouter>
+      <MotionConfig reducedMotion="user">
+        <QueryClientProvider client={queryClient}>
+          <ConfirmProvider>
+            <App />
+          </ConfirmProvider>
+        </QueryClientProvider>
+      </MotionConfig>
+    </BrowserRouter>
   </React.StrictMode>,
 );
