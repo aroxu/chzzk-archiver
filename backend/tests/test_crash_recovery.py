@@ -35,6 +35,19 @@ def _live_recording(tmp_path: Path, captured: bytes = b"", state: str = "recordi
     ), partial
 
 
+def test_startup_removes_ts_staging_file_after_mp4_was_published(tmp_path):
+    recording, staging = _live_recording(tmp_path, b"transport", state="completed")
+    published = staging.with_suffix(".mp4")
+    published.write_bytes(b"published")
+    recording.path = str(published)
+    recording.save()
+
+    asyncio.run(lifecycle.cleanup_completed_transports())
+
+    assert published.exists()
+    assert not staging.exists()
+
+
 def test_restart_resyncs_size_with_the_file_on_disk(tmp_path):
     recording, partial = _live_recording(tmp_path, b"x" * 4096)
     assert Recording.get_by_id(recording.id).size == 1024
@@ -182,4 +195,3 @@ def test_partial_failure_explains_itself_in_korean(monkeypatch, tmp_path):
     assert "부분 파일" in (stored.error or "")
     assert "재생 불가" in (stored.error or "")
     assert stored.size > 0
-

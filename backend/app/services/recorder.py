@@ -353,7 +353,11 @@ async def run_recording(recording_id: int) -> None:
                 raise DownloadCancelled
             if remux.returncode != 0:
                 raise RuntimeError(err.decode(errors="replace")[-1000:])
-            if settings.encoding_mode != "remote":
+            # A live remote job is already reading the growing transport
+            # stream, so it must survive until controller-side publication.
+            # VOD/clip jobs are queued only after this MP4 remux and therefore
+            # have no reason to retain the staging transport stream.
+            if settings.encoding_mode != "remote" or source_type != "live":
                 temp.unlink(missing_ok=True)
             try:
                 await asyncio.to_thread(generate_thumbnail, final)

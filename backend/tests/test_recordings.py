@@ -365,6 +365,7 @@ def test_remote_vod_waits_for_faststart_file_and_allows_m4v_segments(monkeypatch
 
     assert calls[0][calls[0].index("-extension_picky") + 1] == "false"
     assert monitored_paths and monitored_paths[0].suffix == ".ts"
+    assert not monitored_paths[0].exists()
     assert queued_paths == [Path(Recording.get_by_id(recording.id).path)]
     assert queued_paths[0].suffix == ".mp4"
 

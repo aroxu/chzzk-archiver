@@ -75,6 +75,27 @@ async def backfill_durations() -> None:
                 ).execute()
 
 
+async def cleanup_completed_transports() -> None:
+    """Remove obsolete TS staging files paired with published MP4 archives."""
+    with session():
+        published = [
+            Path(row.path)
+            for row in Recording.select(Recording.path).where(
+                Recording.state == "completed", Recording.path.is_null(False)
+            )
+            if row.path and Path(row.path).suffix.lower() == ".mp4"
+        ]
+    for media_path in published:
+        try:
+            media_path.with_suffix(".ts").unlink(missing_ok=True)
+        except OSError as exc:
+            logger.warning(
+                "stale transport cleanup failed path=%s error=%s",
+                media_path.with_suffix(".ts"),
+                str(exc)[:200],
+            )
+
+
 async def backfill_channel_profiles() -> None:
     with session():
         # Filter in SQL so startup does not pull every channel into memory.
@@ -155,6 +176,7 @@ async def lifespan(_: FastAPI):
         asyncio.create_task(scheduler()),
         asyncio.create_task(backfill_thumbnails()),
         asyncio.create_task(backfill_durations()),
+        asyncio.create_task(cleanup_completed_transports()),
         asyncio.create_task(backfill_channel_profiles()),
     ]
     tasks += [asyncio.create_task(run_recording(rid)) for rid in resume_ids]
