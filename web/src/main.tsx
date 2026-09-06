@@ -1145,7 +1145,7 @@ function ArchivePlayer({
     let instance: HlsType | null = null;
     const source = audioOnly
       ? audioFormat === "aac"
-        ? `/api/hls/${recording.id}/audio.m3u8`
+        ? `/api/media/${recording.id}/audio?format=aac`
         : `/api/media/${recording.id}/audio?format=flac`
       : `/api/hls/${recording.id}/master.m3u8`;
     const hlsSource = !audioOnly || audioFormat === "aac";

@@ -64,6 +64,16 @@ def _nonempty(path: Path) -> bool:
     return path.is_file() and path.stat().st_size > 0
 
 
+def _input_options(path: Path) -> list[str]:
+    # CHZZK HLS VODs commonly use .m4v media segments. FFmpeg's HLS demuxer
+    # rejects that extension by default even though the segment is valid MP4.
+    return (
+        ["-allowed_extensions", "ALL", "-extension_picky", "0"]
+        if path.suffix.lower() == ".m3u8"
+        else []
+    )
+
+
 def valid_hls_bundle(directory: Path) -> bool:
     required = (
         directory / "master.m3u8",
@@ -114,7 +124,7 @@ def finalize_hls_bundle(directory: Path) -> Path:
 
 def _probe_codecs(path: Path) -> tuple[str | None, str | None]:
     result = subprocess.run(
-        ["ffprobe", "-v", "error", "-show_entries", "stream=codec_type,codec_name", "-of", "json", str(path)],
+        ["ffprobe", "-v", "error", *_input_options(path), "-show_entries", "stream=codec_type,codec_name", "-of", "json", str(path)],
         capture_output=True, text=True, encoding="utf-8", errors="replace", check=True,
     )
     streams = json.loads(result.stdout).get("streams", [])
@@ -137,7 +147,7 @@ def _run_variant(source: Path, directory: Path, variant: str, *, transcode_h264:
         mapping = ["-map", "0:a:0", "-vn", *codec, *common]
     result = subprocess.run(
         [
-            "ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-i", str(source.resolve()),
+            "ffmpeg", "-y", "-hide_banner", "-loglevel", "error", *_input_options(source), "-i", str(source.resolve()),
             *mapping, "-hls_fmp4_init_filename", f"{variant}-init.mp4",
             "-hls_segment_filename", f"{variant}-segment_%05d.m4s", f"{variant}.m3u8",
         ],
@@ -200,7 +210,7 @@ def generate_flac_asset(media_path: Path) -> Path:
         try:
             subprocess.run(
                 [
-                    "ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-i", str(source),
+                    "ffmpeg", "-y", "-hide_banner", "-loglevel", "error", *_input_options(source), "-i", str(source),
                     "-map", "0:a:0", "-vn", "-c:a", "flac", "-compression_level", "12",
                     "-sample_fmt", "s32", "-bits_per_raw_sample", "24", "-f", "flac", str(temporary),
                 ],
@@ -229,13 +239,13 @@ def generate_aac_hls(media_path: Path) -> Path:
         try:
             result = subprocess.run(
                 [
-                    "ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-i", str(media_path),
+                    "ffmpeg", "-y", "-hide_banner", "-loglevel", "error", *_input_options(media_path), "-i", str(media_path),
                     "-map", "0:a:0", "-vn", "-c:a", "copy", "-f", "hls", "-hls_time", "6",
                     "-hls_playlist_type", "vod", "-hls_segment_type", "fmp4",
                     "-hls_fmp4_init_filename", init_name,
                     "-hls_segment_filename", str(segment_pattern), str(temporary),
                 ],
-                capture_output=True, check=False,
+                capture_output=True, check=False, cwd=directory,
             )
             generated_init = directory / init_name
             generated_segments = sorted(directory.glob(f".audio-{token}-segment_*.m4s"))
@@ -274,7 +284,7 @@ def generate_download_mp4(media_path: Path) -> Path:
         try:
             result = subprocess.run(
                 [
-                    "ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-i", str(source),
+                    "ffmpeg", "-y", "-hide_banner", "-loglevel", "error", *_input_options(source), "-i", str(source),
                     "-map", "0:v:0", "-map", "0:a:0", "-c", "copy", "-movflags", "+faststart", str(temporary),
                 ],
                 capture_output=True, check=False,
@@ -295,7 +305,7 @@ def generate_audio_assets(video_path: Path, source_path: Path | None = None) -> 
         temporary = aac.with_name(f".{aac.name}.{threading.get_ident()}.part.m4a")
         try:
             subprocess.run(
-                ["ffmpeg", "-y", "-loglevel", "error", "-i", str(source_path), "-map", "0:a:0", "-vn", "-c:a", "aac", "-b:a", "192k", str(temporary)],
+                ["ffmpeg", "-y", "-loglevel", "error", *_input_options(source_path), "-i", str(source_path), "-map", "0:a:0", "-vn", "-c:a", "aac", "-b:a", "192k", str(temporary)],
                 capture_output=True, check=True,
             )
             temporary.replace(aac)
@@ -377,7 +387,7 @@ def generate_thumbnail(media_path: Path) -> Path:
         subprocess.run(
             [
                 "ffmpeg", "-y", "-loglevel", "error", "-ss", f"{max(0.0, duration / 2):.3f}",
-                "-i", str(media_path), "-frames:v", "1", "-vf", "scale=640:-2", "-q:v", "3", str(temporary),
+                *_input_options(media_path), "-i", str(media_path), "-frames:v", "1", "-vf", "scale=640:-2", "-q:v", "3", str(temporary),
             ],
             capture_output=True, check=True,
         )
@@ -394,7 +404,7 @@ def recording_json(r: Recording) -> dict:
     if r.state == "recording" and r.path:
         with suppress(OSError):
             reported_size = directory_size(Path(r.path))
-    progress = round(reported_size / r.total_size * 100, 1) if r.total_size else None
+    progress = min(100.0, round(reported_size / r.total_size * 100, 1)) if r.total_size else None
     process = active_processes.get(r.id)
     started_at = as_utc(r.started_at)
     recorded_seconds = max(0, int(r.duration_seconds or 0))

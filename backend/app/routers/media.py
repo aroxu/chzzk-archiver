@@ -125,9 +125,11 @@ def radio_audio(
     try:
         audio_format = requested_format or (user.audio_format if user.audio_format in {"aac", "flac"} else "aac")
         if audio_format == "aac":
-            # AAC is already stored as an HLS audio rendition. Redirecting to
-            # its playlist keeps radio mode audio-only without duplicating it.
-            generate_aac_hls(Path(rec.path))
+            # Original mirrored HLS can contain muxed A/V segments, so lazily
+            # create the audio rendition before redirecting the player to it.
+            playlist = generate_aac_hls(Path(rec.path))
+            if not playlist.is_file():
+                raise RuntimeError("AAC HLS 재생목록이 생성되지 않았습니다")
             return RedirectResponse(f"/api/hls/{recording_id}/audio.m3u8", status_code=307)
         path = generate_flac_asset(Path(rec.path))
     except Exception as exc:

@@ -1,12 +1,16 @@
+import asyncio
 import json
 from pathlib import Path
 
+import httpx
 from fastapi.testclient import TestClient
 
 from app.main import app
 from app.models import AuditLog, Broadcast, Channel, Entitlement, Recording, User
 from app.services import media as media_service
 from app.services import recorder
+from app.services import hls_mirror
+from app.services.hls_mirror import _publish_progress
 from app.services.media import STORAGE_VERSION, thumbnail_path
 
 
@@ -44,13 +48,41 @@ def test_radio_aac_redirects_to_audio_only_hls(monkeypatch, tmp_path):
     bundle.mkdir()
     master = bundle / "master.m3u8"
     master.write_text("#EXTM3U\n")
-    monkeypatch.setattr(media_router, "generate_aac_hls", lambda _path: bundle / "audio.m3u8")
+
+    def fake_generate(_path):
+        playlist = bundle / "audio.m3u8"
+        playlist.write_text("#EXTM3U\n")
+        return playlist
+
+    monkeypatch.setattr(media_router, "generate_aac_hls", fake_generate)
     with TestClient(app) as client:
         user = client.post("/api/auth/setup", json={"username": "admin", "password": "secret"}).json()
         recording_id = _fixture_recording(master, user_id=user["id"]).id
         response = client.get(f"/api/media/{recording_id}/audio?format=aac", follow_redirects=False)
         assert response.status_code == 307
         assert response.headers["location"] == f"/api/hls/{recording_id}/audio.m3u8"
+
+
+def test_aac_hls_generation_uses_bundle_as_ffmpeg_working_directory(monkeypatch, tmp_path):
+    bundle = tmp_path / "sample.hls"
+    bundle.mkdir()
+    master = bundle / "master.m3u8"
+    master.write_text("#EXTM3U\n")
+    observed = {}
+
+    def fake_run(command, **kwargs):
+        observed["cwd"] = kwargs["cwd"]
+        Path(kwargs["cwd"], command[command.index("-hls_fmp4_init_filename") + 1]).write_bytes(b"init")
+        Path(command[-1]).write_text("#EXTM3U\n#EXT-X-MAP:URI=\"init.mp4\"\nseg.m4s\n")
+        Path(kwargs["cwd"], ".audio-test-segment_00000.m4s").write_bytes(b"segment")
+        return type("Result", (), {"returncode": 0, "stderr": b""})()
+
+    monkeypatch.setattr(media_service.threading, "get_ident", lambda: "test")
+    monkeypatch.setattr(media_service.subprocess, "run", fake_run)
+    playlist = media_service.generate_aac_hls(master)
+    assert playlist == bundle / "audio.m3u8"
+    assert observed["cwd"] == bundle
+    assert (bundle / "audio-init.mp4").is_file()
 
 
 def test_flac_is_generated_only_when_requested_and_then_cached(monkeypatch, tmp_path):
@@ -100,6 +132,107 @@ def test_capture_command_copies_video_and_aac_directly(tmp_path):
     assert "libx264" not in command
     assert "libx265" not in command
     assert "video.m3u8" in command and "audio.m3u8" in command
+
+
+def test_hls_mirror_publishes_speed_and_eta_while_segments_are_written(tmp_path):
+    recording = _fixture_recording(state="recording")
+    stopped = asyncio.Event()
+
+    async def exercise():
+        task = asyncio.create_task(
+            _publish_progress(recording.id, tmp_path, 10 * 1024 * 1024, stopped)
+        )
+        await asyncio.sleep(0.05)
+        (tmp_path / ".segment.m4s.part").write_bytes(b"x" * 1024 * 1024)
+        await asyncio.sleep(0.55)
+        stopped.set()
+        await task
+
+    asyncio.run(exercise())
+    stored = Recording.get_by_id(recording.id)
+    assert stored.size >= 1024 * 1024
+    assert stored.speed_bps > 0
+    assert stored.eta_seconds is not None
+    assert stored.eta_seconds > 0
+
+
+def test_progressive_source_uses_parallel_aria2_when_available(monkeypatch, tmp_path):
+    recording = _fixture_recording(state="recording")
+    observed = {}
+
+    async def fake_aria(url, destination, cookies, referer, recording_id, total_size, connections):
+        observed.update(
+            url=url,
+            destination=destination,
+            cookies=cookies,
+            referer=referer,
+            recording_id=recording_id,
+            total_size=total_size,
+            connections=connections,
+        )
+
+    monkeypatch.setattr(recorder.shutil, "which", lambda _name: "aria2c")
+    monkeypatch.setattr(recorder, "download_progressive_aria2", fake_aria)
+    monkeypatch.setattr(recorder.settings, "download_connections", 24)
+    destination = tmp_path / "source.mp4"
+    asyncio.run(
+        recorder._download_progressive_source(
+            "https://cdn.example/video.mp4",
+            destination,
+            {"session": "cookie"},
+            "https://chzzk.naver.com/video/1",
+            recording.id,
+            123456,
+        )
+    )
+
+    assert observed["destination"] == destination
+    assert observed["recording_id"] == recording.id
+    assert observed["total_size"] == 123456
+    assert observed["connections"] == 16
+
+
+def test_vod_hls_segments_are_downloaded_concurrently(monkeypatch, tmp_path):
+    recording = _fixture_recording(state="recording")
+    real_client = httpx.AsyncClient
+    active = 0
+    peak = 0
+
+    async def handler(request: httpx.Request):
+        nonlocal active, peak
+        if request.url.path.endswith(".m4s"):
+            active += 1
+            peak = max(peak, active)
+            await asyncio.sleep(0.03)
+            active -= 1
+            return httpx.Response(200, content=b"segment")
+        playlist = "#EXTM3U\n#EXT-X-TARGETDURATION:6\n" + "".join(
+            f"#EXTINF:6,\nsegment-{index}.m4s\n" for index in range(8)
+        ) + "#EXT-X-ENDLIST\n"
+        return httpx.Response(200, text=playlist)
+
+    transport = httpx.MockTransport(handler)
+    monkeypatch.setattr(
+        hls_mirror.httpx,
+        "AsyncClient",
+        lambda **kwargs: real_client(transport=transport, **kwargs),
+    )
+    master, _, duration = asyncio.run(
+        hls_mirror.mirror_hls(
+            "https://cdn.example/master.m3u8",
+            tmp_path,
+            recording_id=recording.id,
+            referer="https://chzzk.naver.com/video/1",
+            cookies={},
+            live=False,
+            concurrency=4,
+        )
+    )
+
+    assert master.is_file()
+    assert duration == 48
+    assert peak == 4
+    assert len(list(tmp_path.glob("segment-*.m4s"))) == 8
 
 
 def test_h264_transcode_command_is_libx264_crf23(monkeypatch, tmp_path):

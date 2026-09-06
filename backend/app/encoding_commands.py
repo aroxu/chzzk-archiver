@@ -11,7 +11,13 @@ def probe_duration(path: Path, ffprobe: str = "ffprobe") -> float:
     try:
         result = subprocess.run(
             [
-                ffprobe, "-v", "error", "-show_entries", "format=duration",
+                ffprobe, "-v", "error",
+                *(
+                    ["-allowed_extensions", "ALL", "-extension_picky", "0"]
+                    if path.suffix.lower() == ".m3u8"
+                    else []
+                ),
+                "-show_entries", "format=duration",
                 "-of", "default=noprint_wrappers=1:nokey=1", str(path),
             ],
             capture_output=True, text=True, encoding="utf-8", errors="replace",
