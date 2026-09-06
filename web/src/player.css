@@ -311,7 +311,7 @@ button:active,
   color: #fff;
   white-space: nowrap;
 }
-.player-fullscreen {
+.player-radio-toggle {
   margin-left: auto;
 }
 .player-seek,

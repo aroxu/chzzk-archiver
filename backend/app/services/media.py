@@ -107,8 +107,7 @@ def generate_hls_bundle(video_path: Path, aac_path: Path) -> Path:
             return master
         temporary = destination.with_name(f".{destination.name}.{threading.get_ident()}.part")
         shutil.rmtree(temporary, ignore_errors=True)
-        (temporary / "video").mkdir(parents=True)
-        (temporary / "audio").mkdir(parents=True)
+        temporary.mkdir(parents=True)
         try:
             result = subprocess.run(
                 [
@@ -118,9 +117,9 @@ def generate_hls_bundle(video_path: Path, aac_path: Path) -> Path:
                     "-loglevel",
                     "error",
                     "-i",
-                    str(video_path),
+                    str(video_path.resolve()),
                     "-i",
-                    str(aac_path),
+                    str(aac_path.resolve()),
                     "-map",
                     "0:v:0",
                     "-map",
@@ -138,7 +137,7 @@ def generate_hls_bundle(video_path: Path, aac_path: Path) -> Path:
                     "-hls_segment_type",
                     "fmp4",
                     "-hls_fmp4_init_filename",
-                    str(temporary / "%v" / "init.mp4"),
+                    "%v-init.mp4",
                     "-hls_flags",
                     "independent_segments",
                     "-master_pl_name",
@@ -146,24 +145,21 @@ def generate_hls_bundle(video_path: Path, aac_path: Path) -> Path:
                     "-var_stream_map",
                     "v:0,agroup:audio,name:video a:0,agroup:audio,default:yes,name:audio",
                     "-hls_segment_filename",
-                    str(temporary / "%v" / "segment_%05d.m4s"),
-                    str(temporary / "%v" / "index.m3u8"),
+                    "%v-segment_%05d.m4s",
+                    "%v.m3u8",
                 ],
                 capture_output=True,
                 check=False,
+                cwd=temporary,
             )
             generated_master = temporary / "master.m3u8"
             if result.returncode != 0 or not generated_master.exists():
                 raise RuntimeError(result.stderr.decode(errors="replace")[-1000:])
-            # FFmpeg emits native Windows separators and may embed the temporary
-            # directory in EXT-X-MAP.  HLS URIs are URLs, and the temporary
-            # directory is renamed atomically below, so keep every reference
-            # relative to its final playlist.
+            # HLS URIs are URLs, so normalize separators if FFmpeg emits native
+            # Windows paths. All generated names are relative to this bundle.
             for playlist in temporary.rglob("*.m3u8"):
                 lines = []
                 for line in playlist.read_text(encoding="utf-8").splitlines():
-                    if line.startswith("#EXT-X-MAP:"):
-                        line = '#EXT-X-MAP:URI="init.mp4"'
                     lines.append(line.replace("\\", "/"))
                 playlist.write_text("\n".join(lines) + "\n", encoding="utf-8")
             shutil.rmtree(destination, ignore_errors=True)

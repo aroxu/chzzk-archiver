@@ -1455,11 +1455,11 @@ function ArchivePlayer({
           </span>
           <button
             type="button"
-            className={audioOnly ? "active" : ""}
+            className={`player-radio-toggle ${audioOnly ? "active" : ""}`}
             onClick={toggleAudioOnly}
             aria-pressed={audioOnly}
             aria-label={audioOnly ? "영상 모드로 전환" : "라디오 모드로 전환"}
-            title={audioOnly ? "영상 모드" : "오디오 전용 라디오 모드"}
+            title={audioOnly ? "영상 모드" : "라디오 모드"}
           >
             <Headphones />
           </button>
@@ -2170,7 +2170,7 @@ function SettingsPage({ user }: { user: User }) {
       </article>
       <article>
         <small>RADIO AUDIO</small>
-        <h2>오디오 전용 형식</h2>
+        <h2>라디오 모드 형식</h2>
         <p>
           AAC는 데이터 사용량이 적고 빠릅니다. FLAC은 24-bit FLAC 파일을
           재인코딩 없이 전송합니다.
@@ -2178,7 +2178,7 @@ function SettingsPage({ user }: { user: User }) {
         <div
           className="audio-format-control"
           role="radiogroup"
-          aria-label="오디오 전용 스트림 형식"
+          aria-label="라디오 모드 스트림 형식"
         >
           {(["aac", "flac"] as const).map((format) => (
             <button

@@ -93,6 +93,43 @@ def test_hls_assets_are_entitled_and_path_safe(monkeypatch, tmp_path):
         assert client.get(f"/api/hls/{recording_id}/%2e%2e%2fsample.mp4").status_code == 404
 
 
+def test_hls_bundle_uses_portable_flat_output_paths(monkeypatch, tmp_path):
+    from app.services import media as media_service
+
+    video = tmp_path / "채널" / "sample.mp4"
+    video.parent.mkdir()
+    video.write_bytes(b"video")
+    audio = audio_asset_path(video, "aac")
+    audio.write_bytes(b"audio")
+    observed = {}
+
+    def fake_run(command, **kwargs):
+        workdir = Path(kwargs["cwd"])
+        observed["command"] = command
+        observed["cwd"] = workdir
+        (workdir / "master.m3u8").write_text("#EXTM3U\nvideo.m3u8\n", encoding="utf-8")
+        (workdir / "video.m3u8").write_text(
+            '#EXTM3U\n#EXT-X-MAP:URI="video-init.mp4"\nvideo-segment_00000.m4s\n',
+            encoding="utf-8",
+        )
+        (workdir / "audio.m3u8").write_text(
+            '#EXTM3U\n#EXT-X-MAP:URI="audio-init.mp4"\naudio-segment_00000.m4s\n',
+            encoding="utf-8",
+        )
+        return SimpleNamespace(returncode=0, stderr=b"")
+
+    monkeypatch.setattr(media_service.subprocess, "run", fake_run)
+    master = media_service.generate_hls_bundle(video, audio)
+
+    assert master == hls_directory(video) / "master.m3u8"
+    assert master.exists()
+    assert observed["cwd"].name.endswith(".part")
+    command = observed["command"]
+    assert command[command.index("-hls_fmp4_init_filename") + 1] == "%v-init.mp4"
+    assert command[command.index("-hls_segment_filename") + 1] == "%v-segment_%05d.m4s"
+    assert command[-1] == "%v.m3u8"
+
+
 def test_legacy_combined_archive_is_migrated_to_split_v2_storage(monkeypatch, tmp_path):
     from app.services import media as media_service
 
