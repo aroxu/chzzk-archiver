@@ -16,6 +16,7 @@ from ..services.media import (
     generate_aac_hls,
     generate_download_mp4,
     generate_flac_asset,
+    generate_thumbnail,
     migrate_legacy_recording,
     thumbnail_path,
     valid_hls_bundle,
@@ -104,6 +105,11 @@ def thumbnail(recording_id: int, user: User = Depends(current_user), _=Depends(d
     if rec.state != "completed" or not rec.path:
         raise HTTPException(404, "썸네일이 없습니다")
     path = thumbnail_path(Path(rec.path))
+    if not path.exists():
+        try:
+            path = generate_thumbnail(Path(rec.path))
+        except Exception as exc:
+            raise HTTPException(422, f"썸네일을 만들 수 없습니다: {str(exc)[-500:]}") from exc
     if not path.exists():
         raise HTTPException(404, "썸네일이 없습니다")
     return FileResponse(path, media_type="image/jpeg", headers={"Cache-Control": "private, max-age=86400"})

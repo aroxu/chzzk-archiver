@@ -41,6 +41,33 @@ def test_authenticated_range_streaming(tmp_path):
         assert response.content == bytes(range(10, 20))
 
 
+def test_missing_thumbnail_is_generated_lazily(monkeypatch, tmp_path):
+    bundle = tmp_path / "sample.hls"
+    bundle.mkdir()
+    master = bundle / "master.m3u8"
+    master.write_text("#EXTM3U\n")
+    calls = []
+
+    def fake_thumbnail(path):
+        calls.append(path)
+        destination = path.parent / "thumbnail.jpg"
+        destination.write_bytes(b"jpeg")
+        return destination
+
+    monkeypatch.setattr("app.routers.media.generate_thumbnail", fake_thumbnail)
+    with TestClient(app) as client:
+        user = client.post("/api/auth/setup", json={"username": "admin", "password": "secret"}).json()
+        recording_id = _fixture_recording(master, user_id=user["id"]).id
+        recording = Recording.get_by_id(recording_id)
+        Recording.update(state="completed").where(Recording.id == recording.id).execute()
+        listed = client.get("/api/recordings").json()
+        assert listed[0]["thumbnail"] == f"/api/thumbnails/{recording_id}"
+        response = client.get(f"/api/thumbnails/{recording_id}")
+        assert response.status_code == 200
+        assert response.content == b"jpeg"
+    assert calls == [master]
+
+
 def test_radio_aac_redirects_to_audio_only_hls(monkeypatch, tmp_path):
     from app.routers import media as media_router
 

@@ -414,7 +414,9 @@ def recording_json(r: Recording) -> dict:
     return {
         "id": r.id, "state": r.state, "type": broadcast.source_type, "title": broadcast.title,
         "channel": broadcast.channel.name, "channel_id": broadcast.channel.chzzk_id,
-        "thumbnail": f"/api/thumbnails/{r.id}" if r.path and thumbnail_path(Path(r.path)).exists() else None,
+        # Completed archives can lazily create a thumbnail on first request.
+        # Do not permanently hide the URL after a transient FFmpeg failure.
+        "thumbnail": f"/api/thumbnails/{r.id}" if r.path and r.state == "completed" else None,
         "size": reported_size, "total_size": r.total_size, "progress": progress,
         "speed_bps": r.speed_bps, "eta_seconds": r.eta_seconds,
         "recorded_seconds": recorded_seconds, "duration_seconds": max(0, float(r.duration_seconds or 0)),

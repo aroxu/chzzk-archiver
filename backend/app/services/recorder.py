@@ -341,8 +341,12 @@ async def run_recording(recording_id: int) -> None:
             shutil.rmtree(final, ignore_errors=True)
             temporary.replace(final)
             master = final / master.name
-            with suppress(Exception):
+            try:
                 await asyncio.to_thread(generate_thumbnail, master)
+            except Exception as exc:
+                # A missing thumbnail must not turn an otherwise valid archive
+                # into a failed capture; the API retries lazily on first view.
+                logger.warning("recording=%s thumbnail generation failed error=%s", recording_id, _redact(str(exc))[-300:])
             size = directory_size(final)
             duration = mirrored_duration or await asyncio.to_thread(probe_duration, master)
             if not _finalize(
