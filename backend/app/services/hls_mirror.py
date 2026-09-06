@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import re
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urljoin, urlparse
@@ -18,6 +19,12 @@ from .chzzk import _hls_variant
 from .state import DownloadCancelled, active_captures
 
 URI_ATTRIBUTE = re.compile(r'URI="([^"]+)"')
+
+
+def directory_size(path: Path) -> int:
+    if not path.exists():
+        return 0
+    return sum(item.stat().st_size for item in path.rglob("*") if item.is_file())
 
 
 def _safe_url(value: str) -> str:
@@ -107,19 +114,77 @@ async def _download(client: httpx.AsyncClient, url: str, destination: Path, byte
             headers["Range"] = f"bytes={start}-{start + int(length) - 1}"
     error: Exception | None = None
     for attempt in range(3):
+        temporary = destination.with_name(f".{destination.name}.part")
         try:
-            response = await client.get(url, headers=headers, timeout=30)
-            response.raise_for_status()
-            temporary = destination.with_name(f".{destination.name}.part")
-            temporary.write_bytes(response.content)
+            async with client.stream("GET", url, headers=headers, timeout=30) as response:
+                response.raise_for_status()
+                with temporary.open("wb") as output:
+                    async for chunk in response.aiter_bytes(1024 * 1024):
+                        output.write(chunk)
             temporary.replace(destination)
             logger.debug("hls segment downloaded file=%s bytes=%s", destination.name, destination.stat().st_size)
             return
         except (httpx.HTTPError, OSError) as exc:
             error = exc
+            temporary.unlink(missing_ok=True)
             logger.warning("hls segment retry file=%s attempt=%s error=%s", destination.name, attempt + 1, type(exc).__name__)
             await asyncio.sleep(0.5 * (attempt + 1))
     raise RuntimeError(f"HLS 조각 다운로드 실패: {type(error).__name__}")
+
+
+async def _publish_progress(
+    recording_id: int,
+    destination: Path,
+    total_size: int,
+    stopped: asyncio.Event,
+) -> None:
+    """Measure bytes written by concurrent segment downloads."""
+    previous_size = directory_size(destination)
+    previous_at = time.monotonic()
+    smoothed_speed = 0.0
+    last_growth_at: float | None = None
+    while not stopped.is_set():
+        try:
+            await asyncio.wait_for(stopped.wait(), timeout=0.5)
+        except TimeoutError:
+            pass
+        current_size = directory_size(destination)
+        now = time.monotonic()
+        interval = max(0.001, now - previous_at)
+        growth = max(0, current_size - previous_size)
+        if growth:
+            instant_speed = growth / interval
+            smoothed_speed = (
+                instant_speed
+                if not smoothed_speed
+                else smoothed_speed * 0.7 + instant_speed * 0.3
+            )
+            last_growth_at = now
+        active_speed = (
+            int(smoothed_speed)
+            if last_growth_at is not None and now - last_growth_at <= 5
+            else 0
+        )
+        reported_total = max(total_size, current_size) if total_size else 0
+        eta = (
+            max(0, int((reported_total - current_size) / active_speed))
+            if reported_total and active_speed
+            else None
+        )
+        with session():
+            fields = {
+                "size": current_size,
+                "speed_bps": active_speed,
+                "eta_seconds": eta,
+            }
+            if reported_total:
+                fields["total_size"] = reported_total
+            updated = Recording.update(**fields).where(
+                Recording.id == recording_id, Recording.state == "recording"
+            ).execute()
+        if not updated:
+            return
+        previous_size, previous_at = current_size, now
 
 
 async def _localize_header(client: httpx.AsyncClient, line: str, playlist_url: str, destination: Path) -> str:
@@ -168,7 +233,8 @@ async def mirror_hls(
     referer: str,
     cookies: dict[str, str],
     live: bool,
-    concurrency: int = 10,
+    total_size: int = 0,
+    concurrency: int = 16,
     max_segments: int | None = None,
 ) -> tuple[Path, int, float]:
     """Mirror original init/segment bytes and write a fully local playlist."""
@@ -178,12 +244,27 @@ async def mirror_hls(
         recording_id, _safe_url(source_url), live, concurrency,
     )
     client_headers = {"User-Agent": "Mozilla/5.0", "Referer": referer}
-    semaphore = asyncio.Semaphore(max(1, min(16, concurrency)))
+    concurrency = max(1, min(32, concurrency))
+    semaphore = asyncio.Semaphore(concurrency)
     captured: dict[int, Segment] = {}
     active_captures.add(recording_id)
+    progress_stopped = asyncio.Event()
+    progress_task = asyncio.create_task(
+        _publish_progress(recording_id, destination, total_size, progress_stopped)
+    )
     failures = 0
     try:
-        async with httpx.AsyncClient(headers=client_headers, cookies=cookies, follow_redirects=True) as client:
+        limits = httpx.Limits(
+            max_connections=concurrency + 4,
+            max_keepalive_connections=concurrency + 4,
+            keepalive_expiry=30,
+        )
+        async with httpx.AsyncClient(
+            headers=client_headers,
+            cookies=cookies,
+            follow_redirects=True,
+            limits=limits,
+        ) as client:
             response = await client.get(source_url, timeout=20)
             response.raise_for_status()
             variant_url, _ = _hls_variant(response.content, str(response.url))
@@ -239,11 +320,7 @@ async def mirror_hls(
                     captured[entry.sequence] = entry
                 entries = [captured[key] for key in sorted(captured)]
                 _write_playlist(destination, localized_headers, entries, ended=ended or (not live))
-                size = sum(path.stat().st_size for path in destination.iterdir() if path.is_file())
-                with session():
-                    Recording.update(size=size, speed_bps=0).where(
-                        Recording.id == recording_id, Recording.state == "recording"
-                    ).execute()
+                size = directory_size(destination)
                 logger.info(
                     "hls batch stored recording=%s new_segments=%s total_segments=%s bytes=%s",
                     recording_id, len(missing), len(captured), size,
@@ -257,11 +334,13 @@ async def mirror_hls(
         if not entries:
             raise RuntimeError("HLS 재생목록에 미디어 조각이 없습니다")
         _write_playlist(destination, localized_headers, entries, ended=True)
-        size = sum(path.stat().st_size for path in destination.iterdir() if path.is_file())
+        size = directory_size(destination)
         logger.info(
             "hls mirror completed recording=%s segments=%s bytes=%s duration=%.2fs",
             recording_id, len(entries), size, _duration(entries),
         )
         return destination / "master.m3u8", size, _duration(entries)
     finally:
+        progress_stopped.set()
+        await progress_task
         active_captures.discard(recording_id)

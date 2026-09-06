@@ -21,6 +21,8 @@ class Settings(BaseSettings):
     live_probe_timeout: float = 3.0
     live_probe_retries: int = 10
     max_recordings: int = 2
+    download_connections: int = 16
+    hls_download_concurrency: int = 16
     web_dist: Path = Path("./web/dist")
 
 

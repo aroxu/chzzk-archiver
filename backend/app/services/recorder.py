@@ -20,8 +20,17 @@ from ..encoding_commands import probe_duration
 from ..models import Broadcast, Channel, Entitlement, Recording, Subscription
 from . import chzzk
 from .credentials import user_cookies
+from .downloads import download_progressive, download_progressive_aria2
 from .hls_mirror import mirror_hls
-from .media import STORAGE_VERSION, directory_size, finalize_hls_bundle, generate_thumbnail, thumbnail_path, valid_hls_bundle
+from .media import (
+    STORAGE_VERSION,
+    directory_size,
+    finalize_hls_bundle,
+    generate_thumbnail,
+    package_media_as_hls,
+    thumbnail_path,
+    valid_hls_bundle,
+)
 from .state import DownloadCancelled, active_processes, recording_semaphore
 
 
@@ -92,6 +101,42 @@ def _prepare_paths(rec: Recording) -> tuple[Path, Path]:
 
 def _bundle_size(path: Path) -> int:
     return directory_size(path)
+
+
+async def _download_progressive_source(
+    url: str,
+    destination: Path,
+    cookies: dict[str, str],
+    referer: str,
+    recording_id: int,
+    total_size: int,
+) -> None:
+    connections = max(1, min(16, settings.download_connections))
+    if shutil.which("aria2c"):
+        logger.info(
+            "recording=%s accelerated download selected engine=aria2 connections=%s",
+            recording_id,
+            connections,
+        )
+        await download_progressive_aria2(
+            url,
+            destination,
+            cookies,
+            referer,
+            recording_id,
+            total_size,
+            connections,
+        )
+        return
+    logger.info("recording=%s accelerated downloader unavailable; using HTTP stream", recording_id)
+    await asyncio.to_thread(
+        download_progressive,
+        url,
+        destination,
+        cookies,
+        referer,
+        recording_id,
+    )
 
 
 async def monitor_live_progress(
@@ -226,6 +271,8 @@ async def run_recording(recording_id: int) -> None:
                             referer=source_url,
                             cookies=cookies,
                             live=source_type == "live",
+                            total_size=int(resolved.get("total_size") or 0),
+                            concurrency=settings.hls_download_concurrency,
                         )
                         mirrored = True
                         break
@@ -234,6 +281,36 @@ async def run_recording(recording_id: int) -> None:
                     except Exception as exc:
                         errors.append(str(exc))
                         logger.warning("recording=%s hls mirror failed attempt=%s error=%s", recording_id, len(errors), _redact(str(exc))[-300:])
+                        continue
+                if resolved.get("protocol") == "progressive":
+                    try:
+                        source = temporary / "source.mp4"
+                        await _download_progressive_source(
+                            playback_url,
+                            source,
+                            cookies,
+                            source_url,
+                            recording_id,
+                            int(resolved.get("total_size") or 0),
+                        )
+                        with session():
+                            Recording.update(speed_bps=0, eta_seconds=None).where(
+                                Recording.id == recording_id,
+                                Recording.state == "recording",
+                            ).execute()
+                        await asyncio.to_thread(package_media_as_hls, source, temporary)
+                        mirrored = True
+                        break
+                    except DownloadCancelled:
+                        raise
+                    except Exception as exc:
+                        errors.append(str(exc))
+                        logger.warning(
+                            "recording=%s accelerated download failed attempt=%s error=%s",
+                            recording_id,
+                            len(errors),
+                            _redact(str(exc))[-300:],
+                        )
                         continue
                 command = _capture_command(playback_url, source_url, cookies, temporary, source_type)
                 proc = await asyncio.create_subprocess_exec(

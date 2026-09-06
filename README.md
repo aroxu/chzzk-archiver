@@ -27,7 +27,7 @@ docker compose up -d --no-build
 
 ## 저장 구조
 
-새 녹화는 중간 `.ts`, 결합 MP4, 후처리 HEVC 인코딩을 만들지 않습니다. 네트워크 입력을 한 번 열고 FFmpeg의 두 HLS 출력으로 원본 비디오와 AAC를 직접 나눕니다.
+새 녹화는 중간 `.ts`, 결합 MP4, 후처리 HEVC 인코딩을 만들지 않습니다. 원본 HLS는 여러 세그먼트를 병렬로 미러링하고, progressive MP4 VOD/클립은 aria2로 분할 다운로드한 뒤 재인코딩 없이 HLS로 패키징합니다.
 
 ```text
 recording.hls/
@@ -75,7 +75,7 @@ npm install
 npm run dev
 ```
 
-테스트는 `.venv\Scripts\python -m pytest backend/tests -q`, 프런트 검증은 `npm run build`로 실행합니다. 녹화와 마이그레이션에는 PATH의 `ffmpeg`와 `ffprobe`가 필요합니다.
+테스트는 `.venv\Scripts\python -m pytest backend/tests -q`, 프런트 검증은 `npm run build`로 실행합니다. 녹화와 마이그레이션에는 PATH의 `ffmpeg`와 `ffprobe`가 필요합니다. progressive VOD/클립 가속에는 `aria2c`를 사용하며, 없으면 일반 HTTP 스트림으로 자동 대체됩니다. Docker 이미지에는 aria2가 포함됩니다.
 
 ## 주요 환경 변수
 
@@ -88,5 +88,7 @@ npm run dev
 | `ARCHIVER_RECORDINGS_DIR` | HLS 번들 저장 경로 |
 | `ARCHIVER_POLL_INTERVAL` | 라이브 확인 주기(초) |
 | `ARCHIVER_MAX_RECORDINGS` | 동시 캡처 수 |
+| `ARCHIVER_DOWNLOAD_CONNECTIONS` | progressive VOD/클립 분할 다운로드 연결 수(기본/최대 16) |
+| `ARCHIVER_HLS_DOWNLOAD_CONCURRENCY` | HLS 세그먼트 동시 다운로드 수(기본 16, 최대 32) |
 
 원격 인코딩 워커, 별도 TCP 포트, GPU/HEVC 인코딩 설정은 더 이상 사용하지 않습니다.

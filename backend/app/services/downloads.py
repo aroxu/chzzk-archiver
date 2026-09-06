@@ -48,13 +48,18 @@ async def download_progressive_aria2(
     referer: str,
     recording_id: int,
     total_size: int,
+    connections: int = 16,
 ) -> None:
     cookie_header = "; ".join(f"{key}={value}" for key, value in cookies.items())
-    connections = 16
+    # aria2 limits split/max-connection-per-server to 16 for one file.
+    connections = max(1, min(16, connections))
     args = [
         "aria2c", "--continue=true",
         f"--max-connection-per-server={connections}", f"--split={connections}",
-        "--min-split-size=4M", "--file-allocation=none", "--summary-interval=0",
+        "--min-split-size=4M", "--piece-length=4M", "--disk-cache=64M",
+        "--file-allocation=none", "--summary-interval=0",
+        "--auto-file-renaming=false", "--allow-overwrite=true",
+        "--max-tries=5", "--retry-wait=1", "--timeout=30",
         "--console-log-level=warn", "--user-agent=Mozilla/5.0",
         f"--header=Referer: {referer}",
         f"--dir={destination.parent}",

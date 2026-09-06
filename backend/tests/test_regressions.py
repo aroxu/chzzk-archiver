@@ -76,21 +76,15 @@ def test_completion_does_not_overwrite_a_cancel(monkeypatch, tmp_path):
     )
     rec = Recording.create(broadcast=broadcast.id, state="queued")
 
-    async def fake_subprocess(*args, **_kwargs):
-        class Proc:
-            returncode = 0
+    async def fake_download(_url, destination, *_args):
+        destination.write_bytes(b"media")
 
-            async def communicate(self):
-                destination = Path(_kwargs["cwd"])
-                for name in ("video.m3u8", "audio.m3u8"):
-                    (destination / name).write_text("#EXTM3U\n")
-                for name in ("video-init.mp4", "audio-init.mp4", "video-segment_00000.m4s", "audio-segment_00000.m4s"):
-                    (destination / name).write_bytes(b"data")
-                return b"", b""
+    def fake_package(_source, destination):
+        (destination / "master.m3u8").write_text("#EXTM3U\n")
+        return destination / "master.m3u8"
 
-        return Proc()
-
-    monkeypatch.setattr(recorder.asyncio, "create_subprocess_exec", fake_subprocess)
+    monkeypatch.setattr(recorder, "_download_progressive_source", fake_download)
+    monkeypatch.setattr(recorder, "package_media_as_hls", fake_package)
 
     def cancel_during_thumbnail(_path):
         Recording.update(state="canceled").where(Recording.id == rec.id).execute()
