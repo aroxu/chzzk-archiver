@@ -3,6 +3,7 @@ import json
 from datetime import UTC, datetime
 from pathlib import Path
 
+import pytest
 from fastapi.testclient import TestClient
 
 from app.encoding_commands import (
@@ -112,6 +113,95 @@ def test_thumbnail_survives_missing_duration(monkeypatch, tmp_path):
     assert media.generate_thumbnail(video) == media.thumbnail_path(video)
     seek = captured[1][captured[1].index("-ss") + 1]
     assert float(seek) == 0.0
+
+
+def test_common_local_and_remote_finalizer_installs_split_hls_assets(monkeypatch, tmp_path):
+    source = tmp_path / "capture.ts"
+    source.write_bytes(b"original-transport")
+    encoded = tmp_path / "worker-result.mp4"
+    encoded.write_bytes(b"encoded-combined")
+    recording = _recording(source)
+    job = EncodingJob.create(recording=recording.id, state="finalizing", output_extension=".mp4")
+
+    class Result:
+        returncode = 0
+        stderr = b""
+
+    def fake_run(command, **_kwargs):
+        destination = Path(command[-1])
+        destination.write_bytes(b"video-only" if "-an" in command else b"publishable-combined")
+        return Result()
+
+    def fake_audio(video_path, source_path=None):
+        assert source_path is not None
+        assets = {
+            audio_format: encoding.audio_asset_path(video_path, audio_format)
+            for audio_format in ("aac", "flac")
+        }
+        assets["aac"].write_bytes(b"aac")
+        assets["flac"].write_bytes(b"flac")
+        return assets
+
+    def fake_hls(video_path, _aac_path):
+        root = encoding.hls_directory(video_path)
+        root.mkdir()
+        master = root / "master.m3u8"
+        master.write_text("#EXTM3U\n")
+        return master
+
+    monkeypatch.setattr(encoding, "probe_media", lambda *_args, **_kwargs: {"format": {"duration": "3.0"}})
+    monkeypatch.setattr(encoding.subprocess, "run", fake_run)
+    monkeypatch.setattr(encoding, "generate_audio_assets", fake_audio)
+    monkeypatch.setattr(encoding, "generate_hls_bundle", fake_hls)
+    monkeypatch.setattr(encoding, "generate_thumbnail", lambda path: encoding.thumbnail_path(path))
+
+    final = encoding._install_output(job.id, encoded)
+    assert final.read_bytes() == b"video-only"
+    assert not source.exists()
+    assert encoding.audio_asset_path(final, "aac").read_bytes() == b"aac"
+    assert encoding.audio_asset_path(final, "flac").read_bytes() == b"flac"
+    assert (encoding.hls_directory(final) / "master.m3u8").exists()
+    assert Recording.get_by_id(recording.id).state == "completed"
+    assert EncodingJob.get_by_id(job.id).state == "completed"
+
+
+def test_split_packaging_failure_restores_an_mp4_source(monkeypatch, tmp_path):
+    source = tmp_path / "capture.mp4"
+    source.write_bytes(b"original-combined")
+    encoded = tmp_path / "worker-result.mp4"
+    encoded.write_bytes(b"encoded-combined")
+    recording = _recording(source)
+    job = EncodingJob.create(recording=recording.id, state="finalizing", output_extension=".mp4")
+
+    class Result:
+        returncode = 0
+        stderr = b""
+
+    def fake_run(command, **_kwargs):
+        Path(command[-1]).write_bytes(b"video-only" if "-an" in command else b"publishable-combined")
+        return Result()
+
+    def fake_audio(video_path, source_path=None):
+        assert source_path is not None
+        assets = {
+            audio_format: encoding.audio_asset_path(video_path, audio_format)
+            for audio_format in ("aac", "flac")
+        }
+        for path in assets.values():
+            path.write_bytes(b"audio")
+        return assets
+
+    monkeypatch.setattr(encoding, "probe_media", lambda *_args, **_kwargs: {"format": {"duration": "3.0"}})
+    monkeypatch.setattr(encoding.subprocess, "run", fake_run)
+    monkeypatch.setattr(encoding, "generate_audio_assets", fake_audio)
+    monkeypatch.setattr(encoding, "generate_hls_bundle", lambda *_args: (_ for _ in ()).throw(RuntimeError("hls failed")))
+
+    with pytest.raises(RuntimeError, match="hls failed"):
+        encoding._install_output(job.id, encoded)
+    assert source.read_bytes() == b"publishable-combined"
+    assert not encoding.audio_asset_path(source, "aac").exists()
+    assert not encoding.audio_asset_path(source, "flac").exists()
+    assert not encoding.hls_directory(source).exists()
 
 
 def test_worker_lease_advertises_tcp_data_plane(monkeypatch, tmp_path):

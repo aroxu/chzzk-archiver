@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import shutil
 import socket
 import subprocess
 from datetime import UTC, datetime, timedelta
@@ -23,7 +24,14 @@ from ..encoding_commands import (
     with_progress,
 )
 from ..models import EncodingJob, Recording, WorkerNode
-from .media import generate_thumbnail, thumbnail_path
+from .media import (
+    audio_asset_path,
+    generate_audio_assets,
+    generate_hls_bundle,
+    generate_thumbnail,
+    hls_directory,
+    thumbnail_path,
+)
 from .state import active_processes
 
 encoding_semaphore = asyncio.Semaphore(settings.max_encodings)
@@ -295,7 +303,53 @@ def _install_output(job_id: int, encoded: Path) -> Path:
         else:
             media_info = probe_media(publishable, expected_audio_mode=job.audio_mode)
         old_thumbnail = thumbnail_path(source)
-        publishable.replace(final)
+        video_temporary = final.with_name(f".{final.name}.video-{job.id}.part.mp4")
+        audio_assets = {audio_format: audio_asset_path(final, audio_format) for audio_format in ("aac", "flac")}
+        final_replaced = False
+        try:
+            split = subprocess.run(
+                [
+                    "ffmpeg",
+                    "-y",
+                    "-hide_banner",
+                    "-loglevel",
+                    "error",
+                    "-i",
+                    str(publishable),
+                    "-map",
+                    "0:v:0",
+                    "-an",
+                    "-c:v",
+                    "copy",
+                    "-tag:v",
+                    "hvc1",
+                    "-movflags",
+                    "+faststart",
+                    str(video_temporary),
+                ],
+                capture_output=True,
+                check=False,
+            )
+            if split.returncode != 0 or not video_temporary.exists():
+                raise RuntimeError(split.stderr.decode(errors="replace")[-1000:])
+            generate_audio_assets(final, source_path=publishable)
+            video_temporary.replace(final)
+            final_replaced = True
+            generate_hls_bundle(final, audio_assets["aac"])
+        except Exception:
+            video_temporary.unlink(missing_ok=True)
+            for path in audio_assets.values():
+                path.unlink(missing_ok=True)
+            shutil.rmtree(hls_directory(final), ignore_errors=True)
+            if final_replaced:
+                final.unlink(missing_ok=True)
+                if source == final and publishable != final and publishable.exists():
+                    publishable.replace(source)
+            if publishable != final and publishable.exists():
+                publishable.unlink(missing_ok=True)
+            raise
+        if publishable != final:
+            publishable.unlink(missing_ok=True)
         if source != final:
             source.unlink(missing_ok=True)
         old_thumbnail.unlink(missing_ok=True)
@@ -303,7 +357,8 @@ def _install_output(job_id: int, encoded: Path) -> Path:
             generate_thumbnail(final)
         except Exception as exc:
             logger.warning("encoded thumbnail failed recording=%s error=%s", recording.id, str(exc)[:200])
-        size = final.stat().st_size
+        hls_size = sum(path.stat().st_size for path in hls_directory(final).rglob("*") if path.is_file())
+        size = final.stat().st_size + sum(path.stat().st_size for path in audio_assets.values()) + hls_size
         try:
             duration = float(media_info.get("format", {}).get("duration") or 0)
         except (TypeError, ValueError):
@@ -329,12 +384,16 @@ def _install_output(job_id: int, encoded: Path) -> Path:
                 speed_bps=0,
                 eta_seconds=0,
                 duration_seconds=max(0, duration),
+                storage_version=2,
                 error=None,
                 finished_at=now,
             ).where(Recording.id == recording.id, Recording.state == "processing").execute()
         if not updated:
             final.unlink(missing_ok=True)
             thumbnail_path(final).unlink(missing_ok=True)
+            for path in audio_assets.values():
+                path.unlink(missing_ok=True)
+            shutil.rmtree(hls_directory(final), ignore_errors=True)
             raise RuntimeError("recording is no longer awaiting encoding")
         if job.source_path:
             streamed_source = Path(job.source_path)

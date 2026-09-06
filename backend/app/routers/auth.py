@@ -10,7 +10,7 @@ from peewee import IntegrityError
 from ..config import settings
 from ..db import database, db
 from ..models import Credential, Invite, User, as_utc
-from ..schemas import LoginBody, RegisterBody, SetupBody
+from ..schemas import LoginBody, RegisterBody, SetupBody, UserPreferencesBody
 from ..security import audit, current_user, digest, password_hash, session_token
 
 router = APIRouter()
@@ -83,5 +83,14 @@ def me(user: User = Depends(current_user), _=Depends(db)):
         "id": user.id,
         "username": user.username,
         "role": user.role,
+        "audio_format": user.audio_format,
         "cookie_status": "valid" if cred and cred.valid else "missing",
     }
+
+
+@router.patch("/api/me/preferences")
+def update_preferences(body: UserPreferencesBody, user: User = Depends(current_user), _=Depends(db)):
+    user.audio_format = body.audio_format
+    user.save(only=[User.audio_format])
+    audit(user.id, "preferences.update", audio_format=body.audio_format)
+    return {"audio_format": user.audio_format}

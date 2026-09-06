@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import shutil
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -15,7 +16,7 @@ from ..schemas import ManualDownloadBody
 from ..security import admin, audit, current_user
 from ..services import chzzk
 from ..services.credentials import user_cookies
-from ..services.media import recording_json, thumbnail_path
+from ..services.media import audio_asset_path, hls_directory, recording_json, thumbnail_path
 from ..services.recorder import ensure_recording, redact, run_recording
 from ..services.state import active_processes
 
@@ -44,14 +45,24 @@ def _purge_recording_files(rec: Recording, job: EncodingJob | None) -> None:
                 Path(f"{media}.aria2"),
                 media.with_suffix(".mp4"),
                 media.with_suffix(".mkv"),
+                audio_asset_path(media, "aac"),
+                audio_asset_path(media, "flac"),
             }
         )
+        paths.add(hls_directory(media))
     if job and rec.path:
         source = Path(rec.path)
         paths.add(source.with_name(f".{source.stem}.publish-{job.id}.mp4"))
         paths.add(source.with_name(f".{source.stem}.local-{job.id}.part{job.output_extension}"))
     for path in paths:
-        _delete_artifact(path)
+        if path.is_dir():
+            root = settings.recordings_dir.resolve()
+            target = path.resolve()
+            if not target.is_relative_to(root):
+                raise RuntimeError(f"녹화 폴더 밖의 폴더는 삭제할 수 없습니다: {target}")
+            shutil.rmtree(target, ignore_errors=False)
+        else:
+            _delete_artifact(path)
 
 
 def entitled(user: User, rid: int) -> Recording:
@@ -130,7 +141,12 @@ async def manual(
     should_start = created or rec.state in {"failed", "interrupted"}
     if should_start:
         if rec.path and not rec.path.endswith(".ts"):
-            Path(rec.path).unlink(missing_ok=True)
+            previous_media = Path(rec.path)
+            previous_media.unlink(missing_ok=True)
+            thumbnail_path(previous_media).unlink(missing_ok=True)
+            audio_asset_path(previous_media, "aac").unlink(missing_ok=True)
+            audio_asset_path(previous_media, "flac").unlink(missing_ok=True)
+            shutil.rmtree(hls_directory(previous_media), ignore_errors=True)
             rec.path = None
             rec.size = 0
             rec.total_size = 0
@@ -159,6 +175,9 @@ def remove_recording(recording_id: int, user: User = Depends(current_user), _=De
         if rec.path:
             Path(rec.path).unlink(missing_ok=True)
             thumbnail_path(Path(rec.path)).unlink(missing_ok=True)
+            audio_asset_path(Path(rec.path), "aac").unlink(missing_ok=True)
+            audio_asset_path(Path(rec.path), "flac").unlink(missing_ok=True)
+            shutil.rmtree(hls_directory(Path(rec.path)), ignore_errors=True)
         rec.delete_instance()
 
 

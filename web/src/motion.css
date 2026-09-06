@@ -102,7 +102,8 @@
 
 .download-progress progress.indeterminate {
   background:
-    linear-gradient(90deg, transparent, var(--mint), var(--lime), transparent) 0 0 / 38% 100% no-repeat,
+    linear-gradient(90deg, transparent, var(--mint), var(--lime), transparent) 0
+      0 / 38% 100% no-repeat,
     #26302b;
   animation: indeterminate-progress 1.1s linear infinite;
 }
@@ -229,6 +230,40 @@
   border-color: #ff5b63 !important;
   background: #ff5b63;
   color: #fff;
+}
+
+.audio-format-control {
+  display: inline-flex;
+  gap: 5px;
+  margin-top: 12px;
+  padding: 4px;
+  border: 1px solid var(--line);
+  border-radius: 11px;
+  background: #090c0b;
+}
+
+.audio-format-control button {
+  min-width: 82px;
+  border: 0;
+  border-radius: 8px;
+  padding: 10px 16px;
+  background: transparent;
+  color: var(--muted);
+  font-weight: 800;
+}
+
+.audio-format-control button.active {
+  background: var(--lime);
+  color: #111;
+}
+
+/* Raise the compact metadata tier globally without enlarging primary copy. */
+.profile small,
+.stat small,
+.recording-meta small,
+.cookie,
+.auto-record-toggle {
+  font-size: calc(11px + 2pt);
 }
 
 @media (max-width: 600px) {
@@ -377,5 +412,56 @@
     animation: none;
     background: var(--mint);
     opacity: 0.45;
+  }
+}
+
+/* Raise only the compact metadata tier by 2pt across every page. */
+.signal,
+.auth-card small,
+.section-head small,
+.shell header small,
+.add-bar small,
+.settings-grid small,
+.section-head > span,
+.recording-meta p,
+.recording-meta button,
+.channel-list button,
+.download-progress > div,
+.player-info small,
+.player-info p,
+.player-dialog-head small,
+.player-dialog-foot,
+.live-recording-status > div:first-child span,
+.live-recording-status strong,
+.live-recording-status > div:first-child em,
+.live-recording-status > div:nth-child(2),
+.audio-only-visual span,
+.audio-popover header b {
+  font-size: calc(11px + 2pt);
+}
+
+.auth-card .hint,
+.auth-card label,
+.error,
+.notice,
+.profile p {
+  font-size: calc(13px + 2pt);
+}
+
+.thumb > span,
+.channel-list small,
+.channel-list span,
+.live-recording-status > div:nth-child(2) span:last-child,
+.audio-popover output,
+.audio-popover label > span,
+.audio-popover p,
+.confirm-dialog small {
+  font-size: calc(9px + 2pt);
+}
+
+@media (max-width: 600px) {
+  .shell nav button,
+  .player-buttons span {
+    font-size: calc(10px + 2pt);
   }
 }

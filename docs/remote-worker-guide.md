@@ -26,12 +26,18 @@ ARCHIVER_WORKER_STREAM_PORT=8011
   QSV에서는 global quality 23으로 해석합니다.
 - `ARCHIVER_ENCODING_PRESET=auto`: 인코더별 균형 프리셋으로 변환됩니다. NVENC는 `p5`,
   libx265/QSV는 `medium`, AMF는 `balanced`입니다.
-- `ARCHIVER_ENCODING_AUDIO=copy`: 라이브 원본 음성을 그대로 보존합니다. `flac24`는 MP4 안에
-  HEVC와 24-bit FLAC을 저장하지만 손실 음원의 품질을 복원하지 않으며 용량이 늘 수 있습니다.
+- `ARCHIVER_ENCODING_AUDIO=copy`: 원격 전송 중간 스트림에서는 라이브 원본 음성을 그대로
+  보존합니다. 컨트롤러가 수신을 완료하면 비디오 전용 MP4, AAC 192 kbps, 24-bit FLAC을 모두
+  생성하고 fMP4 HLS로 패키징합니다. 사용자의 라디오 모드 선택은 기본 AAC이며 설정에서 FLAC으로
+  바꿀 수 있습니다. FLAC은 손실 음원의 품질을 복원하지 않으며 용량이 늘 수 있습니다.
 
 컨트롤러의 API 포트와 TCP 8011 포트를 워커에서 접근할 수 있어야 합니다. 인터넷에 직접
 노출하기보다 WireGuard/Tailscale 또는 내부망을 권장합니다. API는 HTTPS를 사용하고 TCP 포트는
 신뢰할 수 있는 네트워크에서만 허용하십시오.
+
+기존 결합 MP4/TS/MKV의 분리 저장 마이그레이션은 서버 업데이트 후 컨트롤러가 백그라운드에서
+수행합니다. 워커 바이너리를 사용하지 않으므로 이 작업만을 위해 워커를 먼저 업데이트할 필요는
+없습니다. 변환 중 임시 공간으로 원본 크기의 약 2.2배가 필요합니다.
 
 ## 2. 워커 환경 변수
 

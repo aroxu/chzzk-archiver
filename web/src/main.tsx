@@ -1,8 +1,29 @@
-import React, { createContext, useCallback, useContext, useEffect, useRef, useState } from "react";
+import React, {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useRef,
+  useState,
+} from "react";
 import { createRoot } from "react-dom/client";
-import { QueryClient, QueryClientProvider, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import {
+  QueryClient,
+  QueryClientProvider,
+  useMutation,
+  useQuery,
+  useQueryClient,
+} from "@tanstack/react-query";
 import { Button } from "@heroui/react";
-import { AnimatePresence, MotionConfig, motion, useReducedMotion } from "framer-motion";
+import type HlsType from "hls.js";
+import {
+  AnimatePresence,
+  MotionConfig,
+  motion,
+  useDragControls,
+  useMotionValue,
+  useReducedMotion,
+} from "framer-motion";
 import { BrowserRouter, useLocation, useNavigate } from "react-router-dom";
 import {
   Archive,
@@ -10,6 +31,7 @@ import {
   CircleDot,
   Gauge,
   HardDrive,
+  Headphones,
   LayoutDashboard,
   LogOut,
   Plus,
@@ -24,6 +46,8 @@ import {
   Volume2,
   VolumeX,
   Maximize,
+  Maximize2,
+  PictureInPicture2,
 } from "lucide-react";
 import "./styles.css";
 import "./player.css";
@@ -33,6 +57,7 @@ type User = {
   id: number;
   username: string;
   role: "admin" | "user";
+  audio_format: "aac" | "flac";
   cookie_status: string;
 };
 type Recording = {
@@ -63,7 +88,8 @@ type Recording = {
 const IN_FLIGHT_STATES = new Set(["queued", "recording", "processing"]);
 const MOTION_EASE = [0.22, 1, 0.36, 1] as const;
 
-const motionDuration = (reduceMotion: boolean | null, duration = 0.22) => (reduceMotion ? 0.001 : duration);
+const motionDuration = (reduceMotion: boolean | null, duration = 0.22) =>
+  reduceMotion ? 0.001 : duration;
 
 type ConfirmOptions = {
   title: string;
@@ -77,7 +103,9 @@ type ConfirmRequest = ConfirmOptions & {
   resolve: (confirmed: boolean) => void;
 };
 
-const ConfirmContext = createContext<((options: ConfirmOptions) => Promise<boolean>) | null>(null);
+const ConfirmContext = createContext<
+  ((options: ConfirmOptions) => Promise<boolean>) | null
+>(null);
 
 function useConfirm() {
   const confirmAction = useContext(ConfirmContext);
@@ -96,7 +124,8 @@ function ConfirmProvider({ children }: { children: React.ReactNode }) {
   const confirmAction = useCallback((options: ConfirmOptions) => {
     previousRequest.current?.resolve(false);
     const activeElement = document.activeElement as HTMLElement | null;
-    if (!activeElement?.closest(".confirm-dialog")) opener.current = activeElement;
+    if (!activeElement?.closest(".confirm-dialog"))
+      opener.current = activeElement;
     return new Promise<boolean>((resolve) => {
       const next = { ...options, resolve };
       previousRequest.current = next;
@@ -123,7 +152,11 @@ function ConfirmProvider({ children }: { children: React.ReactNode }) {
         return;
       }
       if (event.key !== "Tab" || !dialog.current) return;
-      const buttons = Array.from(dialog.current.querySelectorAll<HTMLButtonElement>("button:not([disabled])"));
+      const buttons = Array.from(
+        dialog.current.querySelectorAll<HTMLButtonElement>(
+          "button:not([disabled])",
+        ),
+      );
       if (!buttons.length) return;
       const first = buttons[0];
       const last = buttons[buttons.length - 1];
@@ -160,7 +193,10 @@ function ConfirmProvider({ children }: { children: React.ReactNode }) {
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}
               exit={{ opacity: 0 }}
-              transition={{ duration: motionDuration(reduceMotion, 0.18), ease: MOTION_EASE }}
+              transition={{
+                duration: motionDuration(reduceMotion, 0.18),
+                ease: MOTION_EASE,
+              }}
             />
             <motion.section
               ref={dialog}
@@ -168,20 +204,44 @@ function ConfirmProvider({ children }: { children: React.ReactNode }) {
               role="alertdialog"
               aria-modal="true"
               aria-labelledby="confirm-dialog-title"
-              aria-describedby={request.description ? "confirm-dialog-description" : undefined}
+              aria-describedby={
+                request.description ? "confirm-dialog-description" : undefined
+              }
               initial={reduceMotion ? false : { opacity: 0, scale: 0.97, y: 8 }}
               animate={{ opacity: 1, scale: 1, y: 0 }}
-              exit={reduceMotion ? { opacity: 0 } : { opacity: 0, scale: 0.98, y: 4 }}
-              transition={{ duration: motionDuration(reduceMotion, 0.22), ease: MOTION_EASE }}
+              exit={
+                reduceMotion
+                  ? { opacity: 0 }
+                  : { opacity: 0, scale: 0.98, y: 4 }
+              }
+              transition={{
+                duration: motionDuration(reduceMotion, 0.22),
+                ease: MOTION_EASE,
+              }}
             >
-              <small>{request.tone === "danger" ? "DESTRUCTIVE ACTION" : "CONFIRM ACTION"}</small>
+              <small>
+                {request.tone === "danger"
+                  ? "DESTRUCTIVE ACTION"
+                  : "CONFIRM ACTION"}
+              </small>
               <h2 id="confirm-dialog-title">{request.title}</h2>
-              {request.description && <p id="confirm-dialog-description">{request.description}</p>}
+              {request.description && (
+                <p id="confirm-dialog-description">{request.description}</p>
+              )}
               <div className="confirm-actions">
-                <button ref={cancelButton} type="button" className="confirm-cancel" onClick={() => settle(false)}>
+                <button
+                  ref={cancelButton}
+                  type="button"
+                  className="confirm-cancel"
+                  onClick={() => settle(false)}
+                >
                   {request.cancelLabel || "취소"}
                 </button>
-                <button type="button" className="confirm-submit" onClick={() => settle(true)}>
+                <button
+                  type="button"
+                  className="confirm-submit"
+                  onClick={() => settle(true)}
+                >
                   {request.confirmLabel || "확인"}
                 </button>
               </div>
@@ -200,7 +260,8 @@ function hasActiveWork(data: unknown): boolean {
     (item) =>
       item &&
       typeof item === "object" &&
-      (IN_FLIGHT_STATES.has((item as Recording).state) || (item as Subscription).live === true),
+      (IN_FLIGHT_STATES.has((item as Recording).state) ||
+        (item as Subscription).live === true),
   );
 }
 type Subscription = {
@@ -227,7 +288,10 @@ async function api<T>(path: string, init?: RequestInit): Promise<T> {
     headers: { "Content-Type": "application/json", ...(init?.headers || {}) },
     ...init,
   });
-  if (!response.ok) throw new Error((await response.json().catch(() => ({}))).detail || "요청에 실패했습니다");
+  if (!response.ok)
+    throw new Error(
+      (await response.json().catch(() => ({}))).detail || "요청에 실패했습니다",
+    );
   return response.status === 204 ? (undefined as T) : response.json();
 }
 const size = (n: number) => {
@@ -236,7 +300,8 @@ const size = (n: number) => {
   if (n >= 1024 ** 2) return `${(n / 1024 ** 2).toFixed(1)} MB`;
   return `${(n / 1024).toFixed(1)} KB`;
 };
-const typeLabel = (type: Recording["type"]) => (type === "vod" ? "VIDEO" : type.toUpperCase());
+const typeLabel = (type: Recording["type"]) =>
+  type === "vod" ? "VIDEO" : type.toUpperCase();
 const stateLabel = (r: Recording) =>
   r.state === "processing"
     ? "ENCODING"
@@ -257,7 +322,8 @@ const eta = (seconds?: number) => {
     minutes = Math.ceil((seconds % 3600) / 60);
   return `약 ${hours}시간${minutes ? ` ${minutes}분` : ""} 남음`;
 };
-const speed = (bps: number) => (bps ? `${(bps / 1024 / 1024).toFixed(1)} MB/s` : "속도 계산 중");
+const speed = (bps: number) =>
+  bps ? `${(bps / 1024 / 1024).toFixed(1)} MB/s` : "속도 계산 중";
 
 function Auth({ setup }: { setup: boolean }) {
   const [username, setUsername] = useState("");
@@ -272,14 +338,21 @@ function Auth({ setup }: { setup: boolean }) {
     setError("");
     setSubmitting(true);
     try {
-      await api(setup ? "/api/auth/setup" : register ? "/api/auth/register" : "/api/auth/login", {
-        method: "POST",
-        body: JSON.stringify({
-          username,
-          password,
-          ...(register ? { invite } : {}),
-        }),
-      });
+      await api(
+        setup
+          ? "/api/auth/setup"
+          : register
+            ? "/api/auth/register"
+            : "/api/auth/login",
+        {
+          method: "POST",
+          body: JSON.stringify({
+            username,
+            password,
+            ...(register ? { invite } : {}),
+          }),
+        },
+      );
       window.location.reload();
     } catch (e) {
       setError((e as Error).message);
@@ -297,14 +370,22 @@ function Auth({ setup }: { setup: boolean }) {
           <br />
           <em>당신의 기록</em>으로.
         </h1>
-        <p>구독한 채널을 자동으로 기록하고, 나만의 라이브러리에서 다시 만나세요.</p>
+        <p>
+          구독한 채널을 자동으로 기록하고, 나만의 라이브러리에서 다시 만나세요.
+        </p>
         <div className="signal">
           <i /> LIVE CAPTURE SYSTEM
         </div>
       </section>
       <form className="auth-card" onSubmit={submit}>
         <small>{setup ? "FIRST RUN" : "WELCOME BACK"}</small>
-        <h2>{setup ? "관리자 계정 만들기" : register ? "초대로 가입하기" : "아카이브에 로그인"}</h2>
+        <h2>
+          {setup
+            ? "관리자 계정 만들기"
+            : register
+              ? "초대로 가입하기"
+              : "아카이브에 로그인"}
+        </h2>
         <p className="hint">
           {setup
             ? "이 계정이 서버의 첫 관리자가 됩니다."
@@ -314,21 +395,45 @@ function Auth({ setup }: { setup: boolean }) {
         </p>
         <label>
           사용자 이름
-          <input value={username} onChange={(e) => setUsername(e.target.value)} required />
+          <input
+            value={username}
+            onChange={(e) => setUsername(e.target.value)}
+            required
+          />
         </label>
         <label>
           비밀번호
-          <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} required />
+          <input
+            type="password"
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+            required
+          />
         </label>
         {register && (
           <label>
             초대 코드
-            <input value={invite} onChange={(e) => setInvite(e.target.value)} required />
+            <input
+              value={invite}
+              onChange={(e) => setInvite(e.target.value)}
+              required
+            />
           </label>
         )}
         {error && <p className="error">{error}</p>}
-        <Button type="submit" className="primary" isDisabled={submitting} aria-busy={submitting}>
-          {submitting ? "확인 중" : setup ? "아카이브 시작" : register ? "계정 만들기" : "로그인"}
+        <Button
+          type="submit"
+          className="primary"
+          isDisabled={submitting}
+          aria-busy={submitting}
+        >
+          {submitting
+            ? "확인 중"
+            : setup
+              ? "아카이브 시작"
+              : register
+                ? "계정 만들기"
+                : "로그인"}
         </Button>
         {!setup && (
           <button
@@ -347,7 +452,13 @@ function Auth({ setup }: { setup: boolean }) {
   );
 }
 
-function PageTransition({ page, children }: { page: string; children: React.ReactNode }) {
+function PageTransition({
+  page,
+  children,
+}: {
+  page: string;
+  children: React.ReactNode;
+}) {
   const reduceMotion = useReducedMotion();
   return (
     <AnimatePresence mode="wait" initial={false}>
@@ -373,6 +484,7 @@ function Shell({ user }: { user: User }) {
   const navigate = useNavigate();
   const tab = location.pathname.split("/").filter(Boolean)[0] || "dashboard";
   const [playing, setPlaying] = useState<Recording | null>(null);
+  const [playerMinimized, setPlayerMinimized] = useState(false);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const playerOpener = useRef<HTMLElement | null>(null);
   const reduceMotion = useReducedMotion();
@@ -381,16 +493,25 @@ function Shell({ user }: { user: User }) {
     { id: "channels", label: "내 채널", icon: Radio },
     { id: "library", label: "라이브러리", icon: Archive },
     { id: "settings", label: "설정", icon: Settings },
-    ...(user.role === "admin" ? [{ id: "admin", label: "관리", icon: Shield }] : []),
+    ...(user.role === "admin"
+      ? [{ id: "admin", label: "관리", icon: Shield }]
+      : []),
   ];
   const currentTab = nav.some((item) => item.id === tab) ? tab : "dashboard";
   const openPlayer = (recording: Recording) => {
     playerOpener.current = document.activeElement as HTMLElement | null;
+    setPlayerMinimized(false);
     setPlaying(recording);
   };
-  const closePlayer = () => setPlaying(null);
-  const goTo = (id: string) => {
+  const closePlayer = () => {
+    setPlayerMinimized(false);
     setPlaying(null);
+  };
+  const minimizePlayer = () => {
+    setPlayerMinimized(true);
+    window.setTimeout(() => playerOpener.current?.focus(), 0);
+  };
+  const goTo = (id: string) => {
     setMobileMenuOpen(false);
     navigate(id === "dashboard" ? "/" : `/${id}`);
   };
@@ -405,7 +526,11 @@ function Shell({ user }: { user: User }) {
         </div>
         <nav>
           {nav.map((x) => (
-            <button className={currentTab === x.id ? "active" : ""} onClick={() => goTo(x.id)} key={x.id}>
+            <button
+              className={currentTab === x.id ? "active" : ""}
+              onClick={() => goTo(x.id)}
+              key={x.id}
+            >
               <x.icon size={18} />
               {x.label}
             </button>
@@ -419,7 +544,11 @@ function Shell({ user }: { user: User }) {
           </p>
           <button
             title="로그아웃"
-            onClick={() => api("/api/auth/logout", { method: "POST" }).then(() => window.location.reload())}
+            onClick={() =>
+              api("/api/auth/logout", { method: "POST" }).then(() =>
+                window.location.reload(),
+              )
+            }
           >
             <LogOut size={17} />
           </button>
@@ -446,7 +575,8 @@ function Shell({ user }: { user: User }) {
             </div>
           </div>
           <div className={`cookie ${user.cookie_status}`}>
-            <CircleDot size={15} /> 인증 쿠키 {user.cookie_status === "valid" ? "연결됨" : "필요"}
+            <CircleDot size={15} /> 인증 쿠키{" "}
+            {user.cookie_status === "valid" ? "연결됨" : "필요"}
           </div>
         </header>
         <AnimatePresence initial={false}>
@@ -457,7 +587,10 @@ function Shell({ user }: { user: User }) {
               initial={{ height: 0, opacity: 0, y: -8 }}
               animate={{ height: "auto", opacity: 1, y: 0 }}
               exit={{ height: 0, opacity: 0, y: -8 }}
-              transition={{ duration: motionDuration(reduceMotion, 0.28), ease: MOTION_EASE }}
+              transition={{
+                duration: motionDuration(reduceMotion, 0.28),
+                ease: MOTION_EASE,
+              }}
             >
               <div>
                 {nav.map((item) => (
@@ -483,7 +616,7 @@ function Shell({ user }: { user: User }) {
           ) : currentTab === "library" ? (
             <Library user={user} onPlay={openPlayer} />
           ) : currentTab === "settings" ? (
-            <SettingsPage />
+            <SettingsPage user={user} />
           ) : (
             <Admin />
           )}
@@ -495,13 +628,28 @@ function Shell({ user }: { user: User }) {
           playerOpener.current = null;
         }}
       >
-        {playing && <PlayerModal recording={playing} onClose={closePlayer} />}
+        {playing && (
+          <PlayerModal
+            recording={playing}
+            audioFormat={user.audio_format}
+            minimized={playerMinimized}
+            onMinimize={minimizePlayer}
+            onRestore={() => setPlayerMinimized(false)}
+            onClose={closePlayer}
+          />
+        )}
       </AnimatePresence>
     </div>
   );
 }
 
-function Dashboard({ user, onPlay }: { user: User; onPlay: (recording: Recording) => void }) {
+function Dashboard({
+  user,
+  onPlay,
+}: {
+  user: User;
+  onPlay: (recording: Recording) => void;
+}) {
   const { data: subs = [] } = useQuery({
     queryKey: ["subs"],
     queryFn: () => api<Subscription[]>("/api/subscriptions"),
@@ -514,9 +662,18 @@ function Dashboard({ user, onPlay }: { user: User; onPlay: (recording: Recording
     <>
       <section className="stats">
         <Stat icon={Radio} label="구독 채널" value={subs.length} />
-        <Stat icon={CircleDot} label="녹화 중" value={recs.filter((r) => r.state === "recording").length} live />
+        <Stat
+          icon={CircleDot}
+          label="녹화 중"
+          value={recs.filter((r) => r.state === "recording").length}
+          live
+        />
         <Stat icon={Video} label="보관된 영상" value={recs.length} />
-        <Stat icon={HardDrive} label="사용된 용량" value={size(recs.reduce((a, r) => a + r.size, 0))} />
+        <Stat
+          icon={HardDrive}
+          label="사용된 용량"
+          value={size(recs.reduce((a, r) => a + r.size, 0))}
+        />
       </section>
       <section className="section-head">
         <div>
@@ -524,8 +681,14 @@ function Dashboard({ user, onPlay }: { user: User; onPlay: (recording: Recording
           <h2>최근 기록</h2>
         </div>
       </section>
-      <RecordingGrid recordings={recs.slice(0, 6)} onPlay={onPlay} canPurge={user.role === "admin"} />
-      {!recs.length && <Empty text={`${user.username}님의 첫 기록을 기다리고 있어요.`} />}
+      <RecordingGrid
+        recordings={recs.slice(0, 6)}
+        onPlay={onPlay}
+        canPurge={user.role === "admin"}
+      />
+      {!recs.length && (
+        <Empty text={`${user.username}님의 첫 기록을 기다리고 있어요.`} />
+      )}
     </>
   );
 }
@@ -563,7 +726,11 @@ function AutoRecordToggle({ subscription }: { subscription: Subscription }) {
       await qc.cancelQueries({ queryKey: ["subs"] });
       const previous = qc.getQueryData<Subscription[]>(["subs"]);
       qc.setQueryData<Subscription[]>(["subs"], (current = []) =>
-        current.map((item) => (item.id === subscription.id ? { ...item, auto_record: enabled } : item)),
+        current.map((item) =>
+          item.id === subscription.id
+            ? { ...item, auto_record: enabled }
+            : item,
+        ),
       );
       return { previous };
     },
@@ -572,7 +739,9 @@ function AutoRecordToggle({ subscription }: { subscription: Subscription }) {
     },
     onSuccess: (confirmed) => {
       qc.setQueryData<Subscription[]>(["subs"], (current = []) =>
-        current.map((item) => (item.id === confirmed.id ? { ...item, ...confirmed } : item)),
+        current.map((item) =>
+          item.id === confirmed.id ? { ...item, ...confirmed } : item,
+        ),
       );
     },
     onSettled: () => qc.invalidateQueries({ queryKey: ["subs"] }),
@@ -588,7 +757,9 @@ function AutoRecordToggle({ subscription }: { subscription: Subscription }) {
       disabled={mutation.isPending}
       onClick={() => mutation.mutate(!subscription.auto_record)}
     >
-      <span>{subscription.auto_record ? "자동 녹화 켜짐" : "자동 녹화 꺼짐"}</span>
+      <span>
+        {subscription.auto_record ? "자동 녹화 켜짐" : "자동 녹화 꺼짐"}
+      </span>
       <i aria-hidden="true" />
     </button>
   );
@@ -617,7 +788,9 @@ function Channels() {
       setNotice("");
       qc.invalidateQueries({ queryKey: ["subs"] });
       if (!result?.live) return;
-      const label = result.live_title ? `"${result.live_title}"` : `${result.name} 채널`;
+      const label = result.live_title
+        ? `"${result.live_title}"`
+        : `${result.name} 채널`;
       if (
         !(await confirmAction({
           title: "지금부터 녹화할까요?",
@@ -661,7 +834,11 @@ function Channels() {
           value={channel}
           onChange={(e) => setChannel(e.target.value)}
         />
-        <button className="primary" disabled={add.isPending} aria-busy={add.isPending}>
+        <button
+          className="primary"
+          disabled={add.isPending}
+          aria-busy={add.isPending}
+        >
           <Plus size={17} /> {add.isPending ? "확인 중" : "구독"}
         </button>
       </form>
@@ -702,12 +879,16 @@ function Channels() {
               exit={{ opacity: 0, scale: 0.98 }}
               transition={{ duration: 0.2, ease: MOTION_EASE }}
             >
-              <div className="avatar">{ch.image ? <img src={ch.image} alt="" /> : ch.name[0]}</div>
+              <div className="avatar">
+                {ch.image ? <img src={ch.image} alt="" /> : ch.name[0]}
+              </div>
               <div>
                 <b>{ch.name}</b>
                 <small>{ch.channel_id}</small>
               </div>
-              <span className={ch.live ? "on" : ""}>{ch.live ? "LIVE" : "OFFLINE"}</span>
+              <span className={ch.live ? "on" : ""}>
+                {ch.live ? "LIVE" : "OFFLINE"}
+              </span>
               <AutoRecordToggle subscription={ch} />
               <button
                 onClick={async () => {
@@ -723,14 +904,17 @@ function Channels() {
                     return;
                   const removeRecordings = await confirmAction({
                     title: "기존 영상도 제거할까요?",
-                    description: "이 채널에서 저장한 기존 영상을 함께 제거할지 선택하세요.",
+                    description:
+                      "이 채널에서 저장한 기존 영상을 함께 제거할지 선택하세요.",
                     confirmLabel: "영상도 제거",
                     cancelLabel: "영상은 유지",
                     tone: "danger",
                   });
                   await api(`/api/subscriptions/${ch.id}/unsubscribe`, {
                     method: "POST",
-                    body: JSON.stringify({ remove_recordings: removeRecordings }),
+                    body: JSON.stringify({
+                      remove_recordings: removeRecordings,
+                    }),
                   });
                   qc.invalidateQueries({ queryKey: ["subs"] });
                 }}
@@ -743,7 +927,12 @@ function Channels() {
       </motion.div>
       <AnimatePresence initial={false}>
         {!data.length && (
-          <motion.div key="channels-empty" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
+          <motion.div
+            key="channels-empty"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+          >
             <Empty text="자동 녹화를 시작할 채널을 구독하세요." />
           </motion.div>
         )}
@@ -752,7 +941,13 @@ function Channels() {
   );
 }
 
-function Library({ user, onPlay }: { user: User; onPlay: (recording: Recording) => void }) {
+function Library({
+  user,
+  onPlay,
+}: {
+  user: User;
+  onPlay: (recording: Recording) => void;
+}) {
   const qc = useQueryClient();
   const [url, setUrl] = useState("");
   const [message, setMessage] = useState("");
@@ -805,7 +1000,11 @@ function Library({ user, onPlay }: { user: User; onPlay: (recording: Recording) 
         </div>
         <span>{data.length} ARCHIVES</span>
       </div>
-      <RecordingGrid recordings={data} onPlay={onPlay} canPurge={user.role === "admin"} />
+      <RecordingGrid
+        recordings={data}
+        onPlay={onPlay}
+        canPurge={user.role === "admin"}
+      />
       {!data.length && <Empty text="아직 보관된 영상이 없습니다." />}
     </>
   );
@@ -824,18 +1023,25 @@ const mediaTime = (seconds: number) => {
 
 function ArchivePlayer({
   recording,
+  audioFormat,
   onAspectRatio,
 }: {
   recording: Recording;
+  audioFormat: User["audio_format"];
   onAspectRatio?: (ratio: number) => void;
 }) {
   const frame = useRef<HTMLDivElement>(null);
   const video = useRef<HTMLVideoElement>(null);
+  const hls = useRef<HlsType | null>(null);
   const audioGraph = useRef<{
     context: AudioContext;
     compressor: DynamicsCompressorNode;
     makeup: GainNode;
     limiter: DynamicsCompressorNode;
+  } | null>(null);
+  const pendingMediaSwitch = useRef<{
+    time: number;
+    shouldPlay: boolean;
   } | null>(null);
   const [playing, setPlaying] = useState(false);
   const [current, setCurrent] = useState(0);
@@ -846,40 +1052,63 @@ function ArchivePlayer({
   const [boostDb, setBoostDb] = useState(0);
   const [ceilingDb, setCeilingDb] = useState(-1);
   const [compression, setCompression] = useState(0);
+  const [audioOnly, setAudioOnly] = useState(false);
+  const [pipActive, setPipActive] = useState(false);
+  const [fullscreenActive, setFullscreenActive] = useState(
+    Boolean(document.fullscreenElement),
+  );
 
   const ensureAudioGraph = () => {
     if (audioGraph.current) {
-      if (audioGraph.current.context.state === "suspended") void audioGraph.current.context.resume();
+      if (audioGraph.current.context.state === "suspended")
+        void audioGraph.current.context.resume();
       return audioGraph.current;
     }
     if (!video.current) return null;
     const AudioContextConstructor =
       window.AudioContext ||
-      (window as typeof window & { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+      (window as typeof window & { webkitAudioContext?: typeof AudioContext })
+        .webkitAudioContext;
     if (!AudioContextConstructor) return null;
     const context = new AudioContextConstructor();
     const source = context.createMediaElementSource(video.current);
     const compressor = context.createDynamicsCompressor();
     const makeup = context.createGain();
     const limiter = context.createDynamicsCompressor();
-    source.connect(compressor).connect(makeup).connect(limiter).connect(context.destination);
+    source
+      .connect(compressor)
+      .connect(makeup)
+      .connect(limiter)
+      .connect(context.destination);
     audioGraph.current = { context, compressor, makeup, limiter };
     void context.resume();
     return audioGraph.current;
   };
 
-  const applyAudioEffects = (nextBoost: number, nextCeiling: number, nextCompression: number) => {
+  const applyAudioEffects = (
+    nextBoost: number,
+    nextCeiling: number,
+    nextCompression: number,
+  ) => {
     const graph = ensureAudioGraph();
     if (!graph) return;
     const now = graph.context.currentTime;
     const amount = Math.max(0, Math.min(100, nextCompression)) / 100;
-    graph.compressor.threshold.setTargetAtTime(amount ? -8 - amount * 34 : 0, now, 0.02);
+    graph.compressor.threshold.setTargetAtTime(
+      amount ? -8 - amount * 34 : 0,
+      now,
+      0.02,
+    );
     graph.compressor.knee.setTargetAtTime(amount * 24, now, 0.02);
     graph.compressor.ratio.setTargetAtTime(1 + amount * 11, now, 0.02);
     graph.compressor.attack.setTargetAtTime(0.004 + amount * 0.012, now, 0.02);
     graph.compressor.release.setTargetAtTime(0.18 + amount * 0.24, now, 0.02);
     graph.makeup.gain.setTargetAtTime(10 ** (nextBoost / 20), now, 0.02);
-    graph.limiter.threshold.setTargetAtTime(nextBoost > 0 ? nextCeiling : 0, now, 0.02);
+    graph.limiter.threshold.setTargetAtTime(
+      nextBoost > 0 ? nextCeiling : 0,
+      now,
+      0.02,
+    );
     graph.limiter.knee.setTargetAtTime(0, now, 0.02);
     graph.limiter.ratio.setTargetAtTime(nextBoost > 0 ? 20 : 1, now, 0.02);
     graph.limiter.attack.setTargetAtTime(0.002, now, 0.02);
@@ -907,17 +1136,112 @@ function ArchivePlayer({
     },
     [],
   );
+
+  useEffect(() => {
+    const element = video.current;
+    if (!element) return;
+    if (audioOnly && element.currentSrc && !pendingMediaSwitch.current) {
+      pendingMediaSwitch.current = {
+        time: element.currentTime,
+        shouldPlay: !element.paused,
+      };
+    }
+    hls.current?.destroy();
+    hls.current = null;
+    let disposed = false;
+    let instance: HlsType | null = null;
+    const source = audioOnly
+      ? `/api/media/${recording.id}/audio?format=${audioFormat}`
+      : `/api/hls/${recording.id}/master.m3u8`;
+    if (audioOnly || element.canPlayType("application/vnd.apple.mpegurl")) {
+      element.src = source;
+      element.load();
+      return;
+    }
+    void import("hls.js").then(({ default: Hls }) => {
+      if (disposed) return;
+      if (!Hls.isSupported()) {
+        setWaiting(false);
+        return;
+      }
+      instance = new Hls({
+        enableWorker: true,
+        lowLatencyMode: false,
+        backBufferLength: 60,
+      });
+      hls.current = instance;
+      instance.attachMedia(element);
+      instance.on(Hls.Events.MEDIA_ATTACHED, () =>
+        instance?.loadSource(source),
+      );
+      instance.on(Hls.Events.ERROR, (_event, data) => {
+        if (data.fatal) setWaiting(false);
+      });
+    });
+    return () => {
+      disposed = true;
+      instance?.destroy();
+      if (hls.current === instance) hls.current = null;
+    };
+  }, [audioFormat, audioOnly, recording.id]);
   const toggle = () => {
     const element = video.current;
     if (!element) return;
     if (element.paused) void element.play();
     else element.pause();
   };
-  const fullscreen = () => {
-    if (!frame.current) return;
-    if (document.fullscreenElement) void document.exitFullscreen();
-    else void frame.current.requestFullscreen();
+  const fullscreen = async () => {
+    try {
+      if (document.fullscreenElement) await document.exitFullscreen();
+      else await document.documentElement.requestFullscreen();
+    } catch {
+      // Fullscreen can be rejected by browser policy; keep playback intact.
+    }
   };
+  const togglePictureInPicture = async () => {
+    const element = video.current;
+    if (!element || audioOnly || !document.pictureInPictureEnabled) return;
+    try {
+      if (document.pictureInPictureElement)
+        await document.exitPictureInPicture();
+      else await element.requestPictureInPicture();
+    } catch {
+      // The browser may reject PIP before enough media has loaded.
+    }
+  };
+  const toggleAudioOnly = () => {
+    const element = video.current;
+    if (!element) return;
+    if (document.pictureInPictureElement === element)
+      void document.exitPictureInPicture();
+    pendingMediaSwitch.current = {
+      time: element.currentTime,
+      shouldPlay: !element.paused,
+    };
+    setWaiting(true);
+    setAudioOnly((enabled) => !enabled);
+  };
+
+  useEffect(() => {
+    const handleFullscreen = () =>
+      setFullscreenActive(Boolean(document.fullscreenElement));
+    document.addEventListener("fullscreenchange", handleFullscreen);
+    return () =>
+      document.removeEventListener("fullscreenchange", handleFullscreen);
+  }, []);
+
+  useEffect(() => {
+    const element = video.current;
+    if (!element) return;
+    const entered = () => setPipActive(true);
+    const left = () => setPipActive(false);
+    element.addEventListener("enterpictureinpicture", entered);
+    element.addEventListener("leavepictureinpicture", left);
+    return () => {
+      element.removeEventListener("enterpictureinpicture", entered);
+      element.removeEventListener("leavepictureinpicture", left);
+    };
+  }, []);
   const seek = (value: number) => {
     if (video.current) video.current.currentTime = value;
     setCurrent(value);
@@ -935,10 +1259,13 @@ function ArchivePlayer({
     setMuted(video.current.muted);
   };
   return (
-    <div className="archive-player" ref={frame} onDoubleClick={fullscreen}>
+    <div
+      className={`archive-player ${audioOnly ? "audio-only" : ""}`}
+      ref={frame}
+      onDoubleClick={fullscreen}
+    >
       <video
         ref={video}
-        src={`/api/media/${recording.id}`}
         autoPlay
         playsInline
         onClick={toggle}
@@ -950,21 +1277,47 @@ function ArchivePlayer({
           if (Number.isFinite(measured) && measured > 0) setDuration(measured);
         }}
         onLoadedMetadata={(event) => {
-          const { videoWidth, videoHeight } = event.currentTarget;
-          if (videoWidth > 0 && videoHeight > 0) onAspectRatio?.(videoWidth / videoHeight);
+          const element = event.currentTarget;
+          const pending = pendingMediaSwitch.current;
+          if (pending) {
+            element.currentTime = Math.min(
+              pending.time,
+              Number.isFinite(element.duration)
+                ? element.duration
+                : pending.time,
+            );
+            setCurrent(element.currentTime);
+            pendingMediaSwitch.current = null;
+            if (pending.shouldPlay) void element.play();
+          }
+          const { videoWidth, videoHeight } = element;
+          if (videoWidth > 0 && videoHeight > 0)
+            onAspectRatio?.(videoWidth / videoHeight);
         }}
         onLoadStart={() => setWaiting(true)}
         onCanPlay={() => setWaiting(false)}
         onWaiting={() => setWaiting(true)}
         onPlaying={() => setWaiting(false)}
       />
-      {waiting && <span className="player-spinner" aria-label="영상 불러오는 중" />}
+      {audioOnly && (
+        <div className="audio-only-visual" aria-live="polite">
+          <Headphones />
+          <strong>라디오 모드</strong>
+          <span>{audioFormat.toUpperCase()} 오디오만 전송 중</span>
+        </div>
+      )}
+      {waiting && (
+        <span className="player-spinner" aria-label="영상 불러오는 중" />
+      )}
       {!playing && !waiting && (
         <button className="player-center" onClick={toggle} aria-label="재생">
           <Play fill="currentColor" />
         </button>
       )}
-      <div className="player-controls" onDoubleClick={(event) => event.stopPropagation()}>
+      <div
+        className="player-controls"
+        onDoubleClick={(event) => event.stopPropagation()}
+      >
         <input
           className="player-seek"
           type="range"
@@ -982,9 +1335,16 @@ function ArchivePlayer({
         />
         <div className="player-buttons">
           <button onClick={toggle} aria-label={playing ? "일시정지" : "재생"}>
-            {playing ? <Pause fill="currentColor" /> : <Play fill="currentColor" />}
+            {playing ? (
+              <Pause fill="currentColor" />
+            ) : (
+              <Play fill="currentColor" />
+            )}
           </button>
-          <button onClick={toggleMute} aria-label={muted ? "음소거 해제" : "음소거"}>
+          <button
+            onClick={toggleMute}
+            aria-label={muted ? "음소거 해제" : "음소거"}
+          >
             {muted || volume === 0 ? <VolumeX /> : <Volume2 />}
           </button>
           <input
@@ -1003,14 +1363,22 @@ function ArchivePlayer({
               className={boostDb > 0 ? "active" : ""}
               onClick={() => changeBoost(boostDb > 0 ? 0 : 6)}
               aria-pressed={boostDb > 0}
-              aria-label={boostDb > 0 ? "오디오 최대화 끄기" : "오디오 최대화 켜기"}
+              aria-label={
+                boostDb > 0 ? "오디오 최대화 끄기" : "오디오 최대화 켜기"
+              }
             >
               <Gauge />
             </button>
-            <div className="audio-popover" role="group" aria-label="오디오 최대화 설정">
+            <div
+              className="audio-popover"
+              role="group"
+              aria-label="오디오 최대화 설정"
+            >
               <header>
                 <b>오디오 최대화</b>
-                <output>{boostDb > 0 ? `+${boostDb.toFixed(1)} dB` : "꺼짐"}</output>
+                <output>
+                  {boostDb > 0 ? `+${boostDb.toFixed(1)} dB` : "꺼짐"}
+                </output>
               </header>
               <label>
                 <span>증폭</span>
@@ -1034,7 +1402,9 @@ function ArchivePlayer({
                   max="0"
                   step="0.5"
                   value={ceilingDb}
-                  onChange={(event) => changeCeiling(Number(event.target.value))}
+                  onChange={(event) =>
+                    changeCeiling(Number(event.target.value))
+                  }
                   aria-label="최대 피크 목표"
                 />
               </label>
@@ -1046,11 +1416,19 @@ function ArchivePlayer({
               className={compression > 0 ? "active" : ""}
               onClick={() => changeCompression(compression > 0 ? 0 : 45)}
               aria-pressed={compression > 0}
-              aria-label={compression > 0 ? "오디오 컴프레서 끄기" : "오디오 컴프레서 켜기"}
+              aria-label={
+                compression > 0
+                  ? "오디오 컴프레서 끄기"
+                  : "오디오 컴프레서 켜기"
+              }
             >
               <AudioLines />
             </button>
-            <div className="audio-popover compressor-popover" role="group" aria-label="오디오 컴프레서 설정">
+            <div
+              className="audio-popover compressor-popover"
+              role="group"
+              aria-label="오디오 컴프레서 설정"
+            >
               <header>
                 <b>컴프레서</b>
                 <output>{compression > 0 ? `${compression}%` : "꺼짐"}</output>
@@ -1063,7 +1441,9 @@ function ArchivePlayer({
                   max="100"
                   step="5"
                   value={compression}
-                  onChange={(event) => changeCompression(Number(event.target.value))}
+                  onChange={(event) =>
+                    changeCompression(Number(event.target.value))
+                  }
                   aria-label="컴프레서 강도"
                 />
               </label>
@@ -1073,7 +1453,35 @@ function ArchivePlayer({
           <span>
             {mediaTime(current)} / {mediaTime(duration)}
           </span>
-          <button className="player-fullscreen" onClick={fullscreen} aria-label="전체 화면">
+          <button
+            type="button"
+            className={audioOnly ? "active" : ""}
+            onClick={toggleAudioOnly}
+            aria-pressed={audioOnly}
+            aria-label={audioOnly ? "영상 모드로 전환" : "라디오 모드로 전환"}
+            title={audioOnly ? "영상 모드" : "오디오 전용 라디오 모드"}
+          >
+            <Headphones />
+          </button>
+          <button
+            type="button"
+            className={pipActive ? "active" : ""}
+            onClick={togglePictureInPicture}
+            disabled={audioOnly || !document.pictureInPictureEnabled}
+            aria-pressed={pipActive}
+            aria-label={pipActive ? "PIP 종료" : "PIP 시작"}
+            title={
+              audioOnly ? "라디오 모드에서는 PIP를 사용할 수 없습니다" : "PIP"
+            }
+          >
+            <PictureInPicture2 />
+          </button>
+          <button
+            className="player-fullscreen"
+            onClick={fullscreen}
+            aria-label={fullscreenActive ? "전체 화면 종료" : "전체 화면"}
+            aria-pressed={fullscreenActive}
+          >
             <Maximize />
           </button>
         </div>
@@ -1082,11 +1490,32 @@ function ArchivePlayer({
   );
 }
 
-function PlayerModal({ recording, onClose }: { recording: Recording; onClose: () => void }) {
+function PlayerModal({
+  recording,
+  audioFormat,
+  minimized,
+  onMinimize,
+  onRestore,
+  onClose,
+}: {
+  recording: Recording;
+  audioFormat: User["audio_format"];
+  minimized: boolean;
+  onMinimize: () => void;
+  onRestore: () => void;
+  onClose: () => void;
+}) {
+  const overlay = useRef<HTMLDivElement>(null);
   const dialog = useRef<HTMLElement>(null);
   const closeButton = useRef<HTMLButtonElement>(null);
   const resizing = useRef(false);
+  const dragControls = useDragControls();
+  const dragX = useMotionValue(0);
+  const dragY = useMotionValue(0);
   const reduceMotion = useReducedMotion();
+  const [fullscreenActive, setFullscreenActive] = useState(
+    Boolean(document.fullscreenElement),
+  );
   const [aspectRatio, setAspectRatio] = useState(16 / 9);
   const initialSize = () => ({
     width: Math.min(1000, window.innerWidth - 24),
@@ -1110,10 +1539,10 @@ function PlayerModal({ recording, onClose }: { recording: Recording; onClose: ()
       }));
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
-        onClose();
+        if (!document.fullscreenElement) onClose();
         return;
       }
-      if (event.key !== "Tab" || !dialog.current) return;
+      if (minimized || event.key !== "Tab" || !dialog.current) return;
       const focusable = Array.from(
         dialog.current.querySelectorAll<HTMLElement>(
           'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
@@ -1131,8 +1560,10 @@ function PlayerModal({ recording, onClose }: { recording: Recording; onClose: ()
       }
     };
     const previousOverflow = document.body.style.overflow;
-    document.body.style.overflow = "hidden";
-    closeButton.current?.focus();
+    if (!minimized) {
+      document.body.style.overflow = "hidden";
+      closeButton.current?.focus();
+    }
     window.addEventListener("resize", clamp);
     window.addEventListener("keydown", handleKeyDown);
     return () => {
@@ -1140,22 +1571,50 @@ function PlayerModal({ recording, onClose }: { recording: Recording; onClose: ()
       window.removeEventListener("resize", clamp);
       window.removeEventListener("keydown", handleKeyDown);
     };
-  }, [onClose]);
+  }, [minimized, onClose]);
 
-  const fitDialogToVideo = (requestedPlayerWidth: number, ratio: number, chromeWidth: number, chromeHeight: number) => {
+  useEffect(() => {
+    const handleFullscreen = () =>
+      setFullscreenActive(Boolean(document.fullscreenElement));
+    document.addEventListener("fullscreenchange", handleFullscreen);
+    return () =>
+      document.removeEventListener("fullscreenchange", handleFullscreen);
+  }, []);
+
+  useEffect(() => {
+    dragX.set(0);
+    dragY.set(0);
+  }, [dragX, dragY, fullscreenActive, minimized]);
+
+  const fitDialogToVideo = (
+    requestedPlayerWidth: number,
+    ratio: number,
+    chromeWidth: number,
+    chromeHeight: number,
+  ) => {
     const maxDialogWidth = Math.max(280, window.innerWidth - 24);
     const maxDialogHeight = Math.max(240, window.innerHeight - 24);
     const minDialogWidth = Math.min(360, maxDialogWidth);
     const minDialogHeight = Math.min(300, maxDialogHeight);
     const maxPlayerWidth = Math.max(
       1,
-      Math.min(maxDialogWidth - chromeWidth, (maxDialogHeight - chromeHeight) * ratio),
+      Math.min(
+        maxDialogWidth - chromeWidth,
+        (maxDialogHeight - chromeHeight) * ratio,
+      ),
     );
     const minPlayerWidth = Math.min(
       maxPlayerWidth,
-      Math.max(1, minDialogWidth - chromeWidth, (minDialogHeight - chromeHeight) * ratio),
+      Math.max(
+        1,
+        minDialogWidth - chromeWidth,
+        (minDialogHeight - chromeHeight) * ratio,
+      ),
     );
-    const playerWidth = Math.min(maxPlayerWidth, Math.max(minPlayerWidth, requestedPlayerWidth));
+    const playerWidth = Math.min(
+      maxPlayerWidth,
+      Math.max(minPlayerWidth, requestedPlayerWidth),
+    );
     return {
       width: playerWidth + chromeWidth,
       height: playerWidth / ratio + chromeHeight,
@@ -1166,9 +1625,10 @@ function PlayerModal({ recording, onClose }: { recording: Recording; onClose: ()
     let frame = 0;
     const applyRatio = () => {
       frame = 0;
-      if (resizing.current) return;
+      if (resizing.current || minimized || fullscreenActive) return;
       const dialogElement = dialog.current;
-      const playerElement = dialogElement?.querySelector<HTMLElement>(".archive-player");
+      const playerElement =
+        dialogElement?.querySelector<HTMLElement>(".archive-player");
       if (!dialogElement || !playerElement) return;
       const bounds = layoutSize(dialogElement);
       const playerBounds = layoutSize(playerElement);
@@ -1179,7 +1639,10 @@ function PlayerModal({ recording, onClose }: { recording: Recording; onClose: ()
         bounds.height - playerBounds.height,
       );
       setDialogSize((current) =>
-        Math.abs(current.width - next.width) < 0.01 && Math.abs(current.height - next.height) < 0.01 ? current : next,
+        Math.abs(current.width - next.width) < 0.01 &&
+        Math.abs(current.height - next.height) < 0.01
+          ? current
+          : next,
       );
     };
     const scheduleRatio = () => {
@@ -1187,7 +1650,8 @@ function PlayerModal({ recording, onClose }: { recording: Recording; onClose: ()
       frame = requestAnimationFrame(applyRatio);
     };
     const dialogElement = dialog.current;
-    const playerElement = dialogElement?.querySelector<HTMLElement>(".archive-player");
+    const playerElement =
+      dialogElement?.querySelector<HTMLElement>(".archive-player");
     if (!dialogElement || !playerElement) return;
     const observer = new ResizeObserver(scheduleRatio);
     observer.observe(dialogElement);
@@ -1197,7 +1661,7 @@ function PlayerModal({ recording, onClose }: { recording: Recording; onClose: ()
       observer.disconnect();
       if (frame) cancelAnimationFrame(frame);
     };
-  }, [aspectRatio]);
+  }, [aspectRatio, fullscreenActive, minimized]);
 
   const enforceAspectRatio = (ratio: number) => {
     if (!Number.isFinite(ratio) || ratio <= 0) return;
@@ -1205,10 +1669,12 @@ function PlayerModal({ recording, onClose }: { recording: Recording; onClose: ()
   };
 
   const startResize = (event: React.PointerEvent<HTMLButtonElement>) => {
+    if (minimized || fullscreenActive) return;
     event.preventDefault();
     event.stopPropagation();
     const dialogElement = dialog.current;
-    const playerElement = dialogElement?.querySelector<HTMLElement>(".archive-player");
+    const playerElement =
+      dialogElement?.querySelector<HTMLElement>(".archive-player");
     if (!dialogElement || !playerElement) return;
     const bounds = layoutSize(dialogElement);
     const playerBounds = layoutSize(playerElement);
@@ -1224,9 +1690,17 @@ function PlayerModal({ recording, onClose }: { recording: Recording; onClose: ()
     const move = (pointer: PointerEvent) => {
       const horizontalDelta = pointer.clientX - origin.x;
       const verticalDelta = (pointer.clientY - origin.y) * aspectRatio;
-      const dominantDelta = Math.abs(horizontalDelta) >= Math.abs(verticalDelta) ? horizontalDelta : verticalDelta;
+      const dominantDelta =
+        Math.abs(horizontalDelta) >= Math.abs(verticalDelta)
+          ? horizontalDelta
+          : verticalDelta;
       setDialogSize(
-        fitDialogToVideo(origin.playerWidth + dominantDelta, aspectRatio, origin.chromeWidth, origin.chromeHeight),
+        fitDialogToVideo(
+          origin.playerWidth + dominantDelta,
+          aspectRatio,
+          origin.chromeWidth,
+          origin.chromeHeight,
+        ),
       );
     };
     const stop = () => {
@@ -1242,46 +1716,110 @@ function PlayerModal({ recording, onClose }: { recording: Recording; onClose: ()
     window.addEventListener("pointercancel", stop, { once: true });
   };
 
+  const startDrag = (event: React.PointerEvent<HTMLElement>) => {
+    if (fullscreenActive || (event.target as HTMLElement).closest("button"))
+      return;
+    dragControls.start(event);
+  };
+
+  const closePlayer = () => {
+    if (document.fullscreenElement) void document.exitFullscreen();
+    onClose();
+  };
+
+  const minimizedSize = {
+    width: Math.min(380, window.innerWidth - 24),
+    height: Math.min(280, window.innerHeight - 24),
+  };
+
   return (
-    <motion.div className="player-overlay">
-      <motion.div
-        className="player-backdrop"
-        aria-hidden="true"
-        onClick={() => !resizing.current && onClose()}
-        initial={{ opacity: 0 }}
-        animate={{ opacity: 1 }}
-        exit={{ opacity: 0 }}
-        transition={{ duration: motionDuration(reduceMotion, 0.2), ease: MOTION_EASE }}
-      />
+    <motion.div
+      ref={overlay}
+      className={`player-overlay ${minimized ? "minimized" : ""}`}
+    >
+      <AnimatePresence>
+        {!minimized && (
+          <motion.div
+            className="player-backdrop"
+            aria-hidden="true"
+            onClick={() => !resizing.current && onMinimize()}
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            transition={{
+              duration: motionDuration(reduceMotion, 0.2),
+              ease: MOTION_EASE,
+            }}
+          />
+        )}
+      </AnimatePresence>
       <motion.section
         ref={dialog}
-        className="player-dialog"
+        className={`player-dialog ${minimized ? "minimized" : ""}`}
         role="dialog"
-        aria-modal="true"
+        aria-modal={!minimized}
         aria-labelledby="player-dialog-title"
-        style={{ width: dialogSize.width, height: dialogSize.height }}
+        style={{
+          width: minimized ? minimizedSize.width : dialogSize.width,
+          height: minimized ? minimizedSize.height : dialogSize.height,
+          x: dragX,
+          y: dragY,
+        }}
+        drag={!fullscreenActive}
+        dragListener={false}
+        dragControls={dragControls}
+        dragConstraints={overlay}
+        dragElastic={0.04}
+        dragMomentum={false}
         onClick={(event) => event.stopPropagation()}
         initial={reduceMotion ? false : { opacity: 0, scale: 0.97 }}
         animate={{ opacity: 1, scale: 1 }}
         exit={reduceMotion ? { opacity: 0 } : { opacity: 0, scale: 0.98 }}
-        transition={{ duration: motionDuration(reduceMotion, 0.22), ease: MOTION_EASE }}
+        transition={{
+          duration: motionDuration(reduceMotion, 0.22),
+          ease: MOTION_EASE,
+        }}
       >
-        <div className="player-dialog-head">
+        <div
+          className="player-dialog-head"
+          onPointerDown={startDrag}
+          title="드래그하여 플레이어 이동"
+        >
           <div>
             <small>
               {recording.channel} · {typeLabel(recording.type)}
             </small>
             <strong id="player-dialog-title">{recording.title}</strong>
           </div>
-          <button ref={closeButton} onClick={onClose} aria-label="플레이어 닫기">
-            ✕
-          </button>
+          <div className="player-window-actions">
+            {minimized && (
+              <button
+                onClick={onRestore}
+                aria-label="플레이어 원래 크기로 복원"
+                title="원래 크기로"
+              >
+                <Maximize2 />
+              </button>
+            )}
+            <button
+              ref={closeButton}
+              onClick={closePlayer}
+              aria-label="플레이어 닫기"
+            >
+              ✕
+            </button>
+          </div>
         </div>
         <div className="player-dialog-media">
-          <ArchivePlayer recording={recording} onAspectRatio={enforceAspectRatio} />
+          <ArchivePlayer
+            recording={recording}
+            audioFormat={audioFormat}
+            onAspectRatio={enforceAspectRatio}
+          />
         </div>
         <div className="player-dialog-foot">
-          {new Date(recording.created_at).toLocaleString("ko-KR")} · {size(recording.size)}
+          {new Date(recording.created_at).toLocaleString("ko-KR")} ·{" "}
+          {size(recording.size)}
         </div>
         <button
           className="player-resize"
@@ -1316,8 +1854,10 @@ function RecordingGrid({
   const cancel = async (r: Recording) => {
     if (
       await confirmAction({
-        title: r.type === "live" ? "녹화를 중단할까요?" : "다운로드를 취소할까요?",
-        description: "현재까지 저장된 데이터는 작업 상태에 따라 일부 남을 수 있습니다.",
+        title:
+          r.type === "live" ? "녹화를 중단할까요?" : "다운로드를 취소할까요?",
+        description:
+          "현재까지 저장된 데이터는 작업 상태에 따라 일부 남을 수 있습니다.",
         confirmLabel: r.type === "live" ? "녹화 중단" : "다운로드 취소",
         tone: "danger",
       })
@@ -1326,7 +1866,9 @@ function RecordingGrid({
       try {
         await api(`/api/recordings/${r.id}/cancel`, { method: "POST" });
         qc.setQueryData<Recording[]>(["recordings"], (current = []) =>
-          current.map((item) => (item.id === r.id ? { ...item, state: "canceled" } : item)),
+          current.map((item) =>
+            item.id === r.id ? { ...item, state: "canceled" } : item,
+          ),
         );
         await qc.invalidateQueries({ queryKey: ["recordings"] });
       } finally {
@@ -1338,7 +1880,8 @@ function RecordingGrid({
     if (
       !(await confirmAction({
         title: "내 라이브러리에서 제거할까요?",
-        description: "내 목록에서만 사라지며 다른 사용자의 아카이브에는 영향을 주지 않습니다.",
+        description:
+          "내 목록에서만 사라지며 다른 사용자의 아카이브에는 영향을 주지 않습니다.",
         confirmLabel: "목록에서 제거",
         tone: "danger",
       }))
@@ -1347,7 +1890,9 @@ function RecordingGrid({
     setPending(r.id, true);
     try {
       await api(`/api/recordings/${r.id}`, { method: "DELETE" });
-      qc.setQueryData<Recording[]>(["recordings"], (current = []) => current.filter((item) => item.id !== r.id));
+      qc.setQueryData<Recording[]>(["recordings"], (current = []) =>
+        current.filter((item) => item.id !== r.id),
+      );
     } finally {
       setPending(r.id, false);
     }
@@ -1356,7 +1901,8 @@ function RecordingGrid({
     if (
       !(await confirmAction({
         title: `“${r.title}”을 영구 삭제할까요?`,
-        description: "모든 사용자의 라이브러리에서 제거되고 영상 파일도 삭제됩니다. 이 작업은 되돌릴 수 없습니다.",
+        description:
+          "모든 사용자의 라이브러리에서 제거되고 영상 파일도 삭제됩니다. 이 작업은 되돌릴 수 없습니다.",
         confirmLabel: "영구 삭제",
         tone: "danger",
       }))
@@ -1365,7 +1911,9 @@ function RecordingGrid({
     setPending(r.id, true);
     try {
       await api(`/api/admin/recordings/${r.id}`, { method: "DELETE" });
-      qc.setQueryData<Recording[]>(["recordings"], (current = []) => current.filter((item) => item.id !== r.id));
+      qc.setQueryData<Recording[]>(["recordings"], (current = []) =>
+        current.filter((item) => item.id !== r.id),
+      );
       qc.invalidateQueries({ queryKey: ["admin"] });
     } finally {
       setPending(r.id, false);
@@ -1393,17 +1941,24 @@ function RecordingGrid({
             >
               <div
                 className={`thumb ${r.state === "completed" ? "viewable" : ""}`}
-                style={r.thumbnail ? { backgroundImage: `url(${r.thumbnail})` } : {}}
+                style={
+                  r.thumbnail ? { backgroundImage: `url(${r.thumbnail})` } : {}
+                }
                 onClick={() => r.state === "completed" && onPlay(r)}
                 onKeyDown={(event) => {
-                  if (r.state === "completed" && (event.key === "Enter" || event.key === " ")) {
+                  if (
+                    r.state === "completed" &&
+                    (event.key === "Enter" || event.key === " ")
+                  ) {
                     event.preventDefault();
                     onPlay(r);
                   }
                 }}
                 role={r.state === "completed" ? "button" : undefined}
                 tabIndex={r.state === "completed" ? 0 : undefined}
-                aria-label={r.state === "completed" ? `${r.title} 재생` : undefined}
+                aria-label={
+                  r.state === "completed" ? `${r.title} 재생` : undefined
+                }
               >
                 <span className={r.state}>
                   {typeLabel(r.type)} · {stateLabel(r)}
@@ -1424,12 +1979,22 @@ function RecordingGrid({
               <div className="recording-meta">
                 <small>{r.channel}</small>
                 <h3>{r.title}</h3>
-                {(r.state === "recording" || r.state === "queued" || r.state === "processing") && (
-                  <div className={`download-progress ${r.type === "live" ? "live-recording-progress" : ""}`}>
+                {(r.state === "recording" ||
+                  r.state === "queued" ||
+                  r.state === "processing") && (
+                  <div
+                    className={`download-progress ${r.type === "live" ? "live-recording-progress" : ""}`}
+                  >
                     {r.type === "live" && r.state !== "processing" && (
                       <div className="live-recording-status">
                         <div>
-                          <span className={r.recording_active && r.speed_bps > 0 ? "healthy" : "connecting"}>
+                          <span
+                            className={
+                              r.recording_active && r.speed_bps > 0
+                                ? "healthy"
+                                : "connecting"
+                            }
+                          >
                             {r.state === "queued"
                               ? "녹화 대기 중"
                               : r.recording_active && r.speed_bps > 0
@@ -1447,7 +2012,9 @@ function RecordingGrid({
                             {r.speed_bps > 0 ? ` · ${speed(r.speed_bps)}` : ""}
                           </span>
                         </div>
-                        <div className={`live-recording-meter ${r.recording_active ? "writing" : ""}`}>
+                        <div
+                          className={`live-recording-meter ${r.recording_active ? "writing" : ""}`}
+                        >
                           <i />
                         </div>
                       </div>
@@ -1459,7 +2026,8 @@ function RecordingGrid({
                             ? "MP4 마무리 중"
                             : r.encoding_state === "uploading"
                               ? "결과 전송 완료"
-                              : r.encoding_progress != null && r.encoding_progress > 0
+                              : r.encoding_progress != null &&
+                                  r.encoding_progress > 0
                                 ? `HEVC 인코딩 ${r.encoding_progress.toFixed(1)}%`
                                 : `HEVC 인코딩 중 · ${mediaTime(r.encoding_processed_seconds || 0)}`
                           : r.progress != null
@@ -1473,9 +2041,15 @@ function RecordingGrid({
                     </div>
                     <progress
                       max="100"
-                      className={progressValue == null ? "indeterminate" : undefined}
+                      className={
+                        progressValue == null ? "indeterminate" : undefined
+                      }
                       value={progressValue}
-                      aria-label={progressValue == null ? "진행 중" : `진행률 ${progressValue.toFixed(1)}%`}
+                      aria-label={
+                        progressValue == null
+                          ? "진행 중"
+                          : `진행률 ${progressValue.toFixed(1)}%`
+                      }
                     />
                     <div className="download-eta">
                       <span>
@@ -1500,20 +2074,38 @@ function RecordingGrid({
                   </div>
                 )}
                 <p>
-                  {new Date(r.created_at).toLocaleString("ko-KR")} · {size(r.size)}
+                  {new Date(r.created_at).toLocaleString("ko-KR")} ·{" "}
+                  {size(r.size)}
                 </p>
                 {r.error && <p className="error">{r.error}</p>}
                 <div className="recording-actions">
-                  {(r.state === "recording" || r.state === "queued" || r.state === "processing") && (
-                    <button className="cancel" disabled={pendingIds.has(r.id)} onClick={() => cancel(r)}>
-                      {r.state === "processing" ? "인코딩 취소" : r.type === "live" ? "녹화 중단" : "다운로드 취소"}
+                  {(r.state === "recording" ||
+                    r.state === "queued" ||
+                    r.state === "processing") && (
+                    <button
+                      className="cancel"
+                      disabled={pendingIds.has(r.id)}
+                      onClick={() => cancel(r)}
+                    >
+                      {r.state === "processing"
+                        ? "인코딩 취소"
+                        : r.type === "live"
+                          ? "녹화 중단"
+                          : "다운로드 취소"}
                     </button>
                   )}
-                  <button disabled={pendingIds.has(r.id)} onClick={() => remove(r)}>
+                  <button
+                    disabled={pendingIds.has(r.id)}
+                    onClick={() => remove(r)}
+                  >
                     내 기록에서 제거
                   </button>
                   {canPurge && !IN_FLIGHT_STATES.has(r.state) && (
-                    <button className="purge" disabled={pendingIds.has(r.id)} onClick={() => purge(r)}>
+                    <button
+                      className="purge"
+                      disabled={pendingIds.has(r.id)}
+                      onClick={() => purge(r)}
+                    >
                       <Trash2 size={13} /> 아카이브 삭제
                     </button>
                   )}
@@ -1526,29 +2118,90 @@ function RecordingGrid({
     </motion.div>
   );
 }
-function SettingsPage() {
+function SettingsPage({ user }: { user: User }) {
+  const qc = useQueryClient();
   const [code, setCode] = useState("");
+  const audioPreference = useMutation({
+    mutationFn: (audioFormat: User["audio_format"]) =>
+      api<{ audio_format: User["audio_format"] }>("/api/me/preferences", {
+        method: "PATCH",
+        body: JSON.stringify({ audio_format: audioFormat }),
+      }),
+    onMutate: async (audioFormat) => {
+      await qc.cancelQueries({ queryKey: ["me"] });
+      const previous = qc.getQueryData<User>(["me"]);
+      qc.setQueryData<User>(["me"], (current) =>
+        current ? { ...current, audio_format: audioFormat } : current,
+      );
+      return { previous };
+    },
+    onError: (_error, _audioFormat, context) => {
+      if (context?.previous) qc.setQueryData(["me"], context.previous);
+    },
+    onSuccess: ({ audio_format }) => {
+      qc.setQueryData<User>(["me"], (current) =>
+        current ? { ...current, audio_format } : current,
+      );
+    },
+  });
   return (
     <div className="settings-grid">
       <article>
         <small>CHROME EXTENSION</small>
         <h2>브라우저 연결</h2>
-        <p>치지직 로그인 쿠키를 안전하게 동기화합니다. 코드는 10분 동안 한 번만 사용할 수 있습니다.</p>
+        <p>
+          치지직 로그인 쿠키를 안전하게 동기화합니다. 코드는 10분 동안 한 번만
+          사용할 수 있습니다.
+        </p>
         {code ? (
           <code>{code}</code>
         ) : (
           <button
             className="primary"
-            onClick={() => api<{ code: string }>("/api/me/pair", { method: "POST" }).then((x) => setCode(x.code))}
+            onClick={() =>
+              api<{ code: string }>("/api/me/pair", { method: "POST" }).then(
+                (x) => setCode(x.code),
+              )
+            }
           >
             페어링 코드 만들기
           </button>
         )}
       </article>
       <article>
+        <small>RADIO AUDIO</small>
+        <h2>오디오 전용 형식</h2>
+        <p>
+          AAC는 데이터 사용량이 적고 빠릅니다. FLAC은 24-bit FLAC 파일을
+          재인코딩 없이 전송합니다.
+        </p>
+        <div
+          className="audio-format-control"
+          role="radiogroup"
+          aria-label="오디오 전용 스트림 형식"
+        >
+          {(["aac", "flac"] as const).map((format) => (
+            <button
+              type="button"
+              role="radio"
+              aria-checked={user.audio_format === format}
+              className={user.audio_format === format ? "active" : ""}
+              disabled={audioPreference.isPending}
+              onClick={() => audioPreference.mutate(format)}
+              key={format}
+            >
+              {format.toUpperCase()}
+            </button>
+          ))}
+        </div>
+      </article>
+      <article>
         <small>SECURITY</small>
         <h2>개인 라이브러리</h2>
-        <p>영상 접근 권한은 계정별로 분리됩니다. 같은 방송을 다른 사용자가 구독해도 실제 파일은 하나만 저장됩니다.</p>
+        <p>
+          영상 접근 권한은 계정별로 분리됩니다. 같은 방송을 다른 사용자가
+          구독해도 실제 파일은 하나만 저장됩니다.
+        </p>
       </article>
     </div>
   );
@@ -1566,7 +2219,11 @@ function Admin() {
         <Stat icon={Users} label="사용자" value={data.users} />
         <Stat icon={Radio} label="활성 구독" value={data.subscriptions} />
         <Stat icon={Video} label="공용 녹화" value={data.recordings} />
-        <Stat icon={HardDrive} label="디스크 사용" value={`${data.disk.percent}%`} />
+        <Stat
+          icon={HardDrive}
+          label="디스크 사용"
+          value={`${data.disk.percent}%`}
+        />
       </section>
       <div className="settings-grid admin-invites">
         <article>
@@ -1626,7 +2283,8 @@ const queryClient = new QueryClient({
     queries: {
       // Keep the last successful value visible while a background poll is in
       // flight. Stable item IDs then let React update only changed content.
-      refetchInterval: (query) => (hasActiveWork(query.state.data) ? 1000 : 15000),
+      refetchInterval: (query) =>
+        hasActiveWork(query.state.data) ? 1000 : 15000,
       refetchIntervalInBackground: false,
       staleTime: 800,
     },

@@ -17,7 +17,7 @@ from .encoding_commands import probe_duration
 from .schema_migrations import migrate
 from .services import chzzk
 from .services.encoding import process_local_job, resume_local_jobs
-from .services.media import generate_thumbnail, thumbnail_path
+from .services.media import generate_thumbnail, migrate_legacy_recording, thumbnail_path
 from .services.recorder import monitor_live_channels_once, run_recording
 from .services.stream_transport import start_stream_server
 
@@ -75,8 +75,39 @@ async def backfill_durations() -> None:
                 ).execute()
 
 
+async def migrate_legacy_media() -> None:
+    """Upgrade pre-v2 combined archives in the background, one at a time."""
+    with session():
+        recording_ids = [
+            row.id
+            for row in Recording.select(Recording.id).where(
+                Recording.state == "completed",
+                Recording.path.is_null(False),
+                Recording.storage_version < 2,
+            )
+        ]
+    for recording_id in recording_ids:
+        try:
+            await asyncio.to_thread(migrate_legacy_recording, recording_id)
+            logger.info("legacy media migrated recording=%s storage_version=2", recording_id)
+        except Exception as exc:
+            logger.warning(
+                "legacy media migration deferred recording=%s error=%s",
+                recording_id,
+                str(exc)[:300],
+            )
+
+
+async def backfill_media_metadata() -> None:
+    # Migration may rename TS/MKV sources, so metadata jobs must observe the
+    # updated path instead of racing the atomic replacement.
+    await migrate_legacy_media()
+    await backfill_thumbnails()
+    await backfill_durations()
+
+
 async def cleanup_completed_transports() -> None:
-    """Remove obsolete TS staging files paired with published MP4 archives."""
+    """Remove obsolete transport/container files paired with published MP4 archives."""
     with session():
         published = [
             Path(row.path)
@@ -86,14 +117,16 @@ async def cleanup_completed_transports() -> None:
             if row.path and Path(row.path).suffix.lower() == ".mp4"
         ]
     for media_path in published:
-        try:
-            media_path.with_suffix(".ts").unlink(missing_ok=True)
-        except OSError as exc:
-            logger.warning(
-                "stale transport cleanup failed path=%s error=%s",
-                media_path.with_suffix(".ts"),
-                str(exc)[:200],
-            )
+        for extension in (".ts", ".mkv"):
+            stale_path = media_path.with_suffix(extension)
+            try:
+                stale_path.unlink(missing_ok=True)
+            except OSError as exc:
+                logger.warning(
+                    "stale media cleanup failed path=%s error=%s",
+                    stale_path,
+                    str(exc)[:200],
+                )
 
 
 async def backfill_channel_profiles() -> None:
@@ -174,8 +207,7 @@ async def lifespan(_: FastAPI):
     stream_server = await start_stream_server()
     tasks = [
         asyncio.create_task(scheduler()),
-        asyncio.create_task(backfill_thumbnails()),
-        asyncio.create_task(backfill_durations()),
+        asyncio.create_task(backfill_media_metadata()),
         asyncio.create_task(cleanup_completed_transports()),
         asyncio.create_task(backfill_channel_profiles()),
     ]

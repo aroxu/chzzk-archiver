@@ -8,7 +8,7 @@ from app import lifecycle
 from app.main import app
 from app.models import AuditLog, Broadcast, Channel, EncodingJob, Entitlement, Recording, Subscription, User
 from app.services import recorder
-from app.services.media import recording_json, thumbnail_path
+from app.services.media import audio_asset_path, hls_directory, recording_json, thumbnail_path
 
 
 def _fixture_recording(media: Path | None = None, state: str = "completed", user_id: int | None = None):
@@ -45,6 +45,105 @@ def test_authenticated_range_streaming(tmp_path):
         thumbnail = client.get(f"/api/thumbnails/{recording_id}")
         assert thumbnail.status_code == 200
         assert thumbnail.content == b"jpeg"
+
+
+def test_radio_stream_uses_the_users_selected_audio_asset(monkeypatch, tmp_path):
+    from app.routers import media as media_router
+
+    media = tmp_path / "sample.mp4"
+    media.write_bytes(b"video")
+    aac = audio_asset_path(media, "aac")
+    flac = audio_asset_path(media, "flac")
+    aac.write_bytes(b"aac-only")
+    flac.write_bytes(b"flac-only")
+    monkeypatch.setattr(media_router, "generate_audio_assets", lambda _path: {"aac": aac, "flac": flac})
+    with TestClient(app) as client:
+        created = client.post("/api/auth/setup", json={"username": "admin", "password": "secret"}).json()
+        recording_id = _fixture_recording(media, user_id=created["id"]).id
+        default_audio = client.get(f"/api/media/{recording_id}/audio")
+        assert default_audio.content == b"aac-only"
+        assert default_audio.headers["content-type"].startswith("audio/mp4")
+        client.patch("/api/me/preferences", json={"audio_format": "flac"})
+        lossless_audio = client.get(f"/api/media/{recording_id}/audio?format=flac")
+        assert lossless_audio.content == b"flac-only"
+        assert lossless_audio.headers["content-type"].startswith("audio/flac")
+        assert client.get(f"/api/media/{recording_id}/audio?format=mp3").status_code == 422
+
+
+def test_hls_assets_are_entitled_and_path_safe(monkeypatch, tmp_path):
+    from app.routers import media as media_router
+
+    media = tmp_path / "sample.mp4"
+    media.write_bytes(b"video")
+    aac = audio_asset_path(media, "aac")
+    aac.write_bytes(b"aac")
+    root = hls_directory(media)
+    root.mkdir()
+    master = root / "master.m3u8"
+    master.write_text("#EXTM3U\n", encoding="utf-8")
+    monkeypatch.setattr(media_router, "generate_audio_assets", lambda _path: {"aac": aac})
+    monkeypatch.setattr(media_router, "generate_hls_bundle", lambda _video, _aac: master)
+    with TestClient(app) as client:
+        created = client.post("/api/auth/setup", json={"username": "admin", "password": "secret"}).json()
+        recording_id = _fixture_recording(media, user_id=created["id"]).id
+        response = client.get(f"/api/hls/{recording_id}/master.m3u8")
+        assert response.status_code == 200
+        assert response.text.splitlines() == ["#EXTM3U"]
+        assert response.headers["content-type"].startswith("application/vnd.apple.mpegurl")
+        assert client.get(f"/api/hls/{recording_id}/%2e%2e%2fsample.mp4").status_code == 404
+
+
+def test_legacy_combined_archive_is_migrated_to_split_v2_storage(monkeypatch, tmp_path):
+    from app.services import media as media_service
+
+    source = tmp_path / "legacy.ts"
+    source.write_bytes(b"combined-transport")
+    recording = _fixture_recording(source)
+    monkeypatch.setattr(media_service.settings, "recordings_dir", tmp_path)
+    monkeypatch.setattr(media_service, "_stream_codecs", lambda _path: ("hevc", True))
+    monkeypatch.setattr(media_service, "probe_duration", lambda _path: 123.5)
+    monkeypatch.setattr(media_service, "generate_thumbnail", lambda _path: None)
+
+    class Result:
+        returncode = 0
+        stderr = b""
+
+    def fake_run(command, **_kwargs):
+        Path(command[-1]).write_bytes(b"video-only")
+        return Result()
+
+    def fake_audio(video_path, source_path=None):
+        assert source_path == source
+        assets = {
+            audio_format: audio_asset_path(video_path, audio_format)
+            for audio_format in ("aac", "flac")
+        }
+        assets["aac"].write_bytes(b"aac")
+        assets["flac"].write_bytes(b"flac")
+        return assets
+
+    def fake_hls(video_path, _aac_path):
+        root = hls_directory(video_path)
+        root.mkdir()
+        master = root / "master.m3u8"
+        master.write_text("#EXTM3U\n")
+        return master
+
+    monkeypatch.setattr(media_service.subprocess, "run", fake_run)
+    monkeypatch.setattr(media_service, "generate_audio_assets", fake_audio)
+    monkeypatch.setattr(media_service, "generate_hls_bundle", fake_hls)
+
+    final = media_service.migrate_legacy_recording(recording.id)
+    stored = Recording.get_by_id(recording.id)
+    assert final == source.with_suffix(".mp4")
+    assert final.read_bytes() == b"video-only"
+    assert not source.exists()
+    assert audio_asset_path(final, "aac").read_bytes() == b"aac"
+    assert audio_asset_path(final, "flac").read_bytes() == b"flac"
+    assert (hls_directory(final) / "master.m3u8").exists()
+    assert stored.path == str(final)
+    assert stored.duration_seconds == 123.5
+    assert stored.storage_version == 2
 
 
 def test_media_is_hidden_from_users_without_entitlement(tmp_path):
@@ -111,6 +210,10 @@ def test_deleting_last_entitlement_removes_file(tmp_path):
     media = tmp_path / "removable.mp4"
     media.write_bytes(b"video")
     thumbnail_path(media).write_bytes(b"jpeg")
+    audio_asset_path(media, "aac").write_bytes(b"aac")
+    audio_asset_path(media, "flac").write_bytes(b"flac")
+    hls_directory(media).mkdir()
+    (hls_directory(media) / "master.m3u8").write_text("#EXTM3U\n")
     with TestClient(app) as client:
         created = client.post("/api/auth/setup", json={"username": "admin", "password": "secret"}).json()
         recording_id = _fixture_recording(media, user_id=created["id"]).id
@@ -118,6 +221,9 @@ def test_deleting_last_entitlement_removes_file(tmp_path):
     assert Recording.get_or_none(Recording.id == recording_id) is None
     assert not media.exists()
     assert not thumbnail_path(media).exists()
+    assert not audio_asset_path(media, "aac").exists()
+    assert not audio_asset_path(media, "flac").exists()
+    assert not hls_directory(media).exists()
 
 
 def test_shared_recording_survives_one_user_deleting_it(tmp_path):

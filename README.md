@@ -4,7 +4,7 @@
 
 - 구독 채널의 라이브 방송은 자동으로 감지해 녹화합니다.
 - 라이브, 다시보기(VOD), 클립 URL은 라이브러리에서 수동 다운로드할 수 있습니다.
-- 완료된 MP4는 로그인한 사용자의 웹 플레이어에서 HTTP Range 스트리밍으로 재생됩니다.
+- 완료된 영상은 비디오 전용 MP4, AAC, 24-bit FLAC으로 분리 저장하고 HLS로 재생합니다.
 - 녹화가 끝나면 기본적으로 로컬 FFmpeg가 HEVC CRF 23으로 압축합니다.
 
 ## 실행
@@ -50,9 +50,11 @@ ARCHIVER_DOWNLOAD_CONNECTIONS=16
 
 기본값은 `auto / quality 23 / preset auto`와 원본 오디오 복사입니다. `auto`는 짧은 시험
 인코딩을 통과한 GPU 인코더를 우선 사용하고, 없으면 `libx265`로 대체합니다.
-CPU 인코더는 CRF, NVENC는 CQP를 사용합니다. `ARCHIVER_ENCODING_AUDIO=flac24`를 지정하면
-24-bit FLAC 오디오와 HEVC 영상을 MP4 컨테이너에 저장합니다. 이미 손실 압축된 라이브 AAC를
-FLAC으로 변환해도 음질이 복원되지는 않으며 용량은 증가할 수 있습니다.
+CPU 인코더는 CRF, NVENC는 CQP를 사용합니다. 인코딩 완료 시 최종 보관물은 비디오 전용 MP4와
+AAC 192 kbps, 24-bit FLAC(압축 레벨 12)로 분리됩니다. 웹 플레이어는 비디오와 AAC rendition을
+분리한 fMP4 HLS로 재생하고, 라디오 모드는 사용자 설정에 따라 AAC 또는 FLAC 파일만 요청합니다.
+기본 선택은 AAC입니다. 이미 손실 압축된 라이브 AAC를 FLAC으로 변환해도 음질이 복원되지는
+않으며, 사용자가 무손실 컨테이너가 필요한 경우를 위한 선택지입니다.
 
 ```dotenv
 ARCHIVER_ENCODING_MODE=local
@@ -63,8 +65,20 @@ ARCHIVER_ENCODING_AUDIO=copy
 ARCHIVER_MAX_ENCODINGS=1
 ```
 
-인코딩에 실패하면 캡처 원본을 삭제하지 않고 라이브러리에 그대로 게시합니다. 인코딩 결과가
-`ffprobe` 검증을 통과한 경우에만 원본과 원자적으로 교체합니다.
+`ARCHIVER_ENCODING_AUDIO`는 인코딩 중간 스트림의 오디오 처리만 제어합니다. 최종 분리 저장 단계는
+항상 AAC와 FLAC을 모두 만듭니다. 인코딩에 실패하면 캡처 원본을 삭제하지 않고 라이브러리에 그대로
+게시합니다. 인코딩 결과가 `ffprobe` 검증을 통과한 경우에만 원본과 원자적으로 교체합니다.
+
+### 기존 아카이브 마이그레이션
+
+업데이트 후 서버를 시작하면 `storage_version`이 없는 기존 완료 영상도 백그라운드에서 한 개씩
+자동 변환합니다. 기존 결합 MP4/TS/MKV에서 비디오 전용 MP4, AAC, 24-bit FLAC과 분리형 HLS를
+모두 만든 뒤 DB 경로를 갱신하고 마지막에 원본을 제거합니다. 중단되거나 FFmpeg가 실패하면 기존
+원본과 `storage_version=0`을 유지하므로 다음 서버 시작 때 다시 시도합니다.
+
+변환 중에는 원본과 새 파일이 잠시 함께 존재합니다. 안전을 위해 대상 파일 크기의 약 2.2배 또는
+최소 512 MB의 여유 공간이 없으면 해당 항목을 건너뛰고 로그에 `legacy media migration deferred`를
+남깁니다. 원격 인코딩 워커는 필요하지 않으며 이 마이그레이션은 컨트롤러 FFmpeg에서 수행됩니다.
 
 ## 원격 실시간 인코딩 워커
 

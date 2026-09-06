@@ -55,3 +55,14 @@ def test_non_admin_cannot_issue_invites():
         viewer.post("/api/auth/register", json={"username": "viewer", "password": "secret", "invite": invite})
         assert viewer.post("/api/admin/invites").status_code == 403
         assert viewer.get("/api/admin/overview").status_code == 403
+
+
+def test_audio_preference_defaults_to_aac_and_can_select_flac():
+    with TestClient(app) as client:
+        client.post("/api/auth/setup", json={"username": "admin", "password": "secret"})
+        assert client.get("/api/me").json()["audio_format"] == "aac"
+        response = client.patch("/api/me/preferences", json={"audio_format": "flac"})
+        assert response.status_code == 200
+        assert response.json() == {"audio_format": "flac"}
+        assert client.get("/api/me").json()["audio_format"] == "flac"
+        assert client.patch("/api/me/preferences", json={"audio_format": "mp3"}).status_code == 422

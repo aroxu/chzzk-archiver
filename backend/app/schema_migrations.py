@@ -10,6 +10,7 @@ RECORDING_COLUMNS = {
     "speed_bps": "INTEGER DEFAULT 0",
     "eta_seconds": "INTEGER",
     "duration_seconds": "REAL DEFAULT 0",
+    "storage_version": "INTEGER NOT NULL DEFAULT 0",
     "started_at": "DATETIME",
 }
 
@@ -21,6 +22,10 @@ ENCODING_COLUMNS = {
     "duration_seconds": "REAL DEFAULT 0",
     "encoding_speed": "REAL DEFAULT 0",
     "eta_seconds": "INTEGER",
+}
+
+USER_COLUMNS = {
+    "audio_format": "VARCHAR(8) NOT NULL DEFAULT 'aac'",
 }
 
 
@@ -42,6 +47,10 @@ def migrate() -> None:
     for column, definition in ENCODING_COLUMNS.items():
         if column not in encoding_existing:
             database.execute_sql(f"ALTER TABLE encoding_jobs ADD COLUMN {column} {definition}")
+    user_existing = {row[1] for row in database.execute_sql("PRAGMA table_info(users)")}
+    for column, definition in USER_COLUMNS.items():
+        if column not in user_existing:
+            database.execute_sql(f"ALTER TABLE users ADD COLUMN {column} {definition}")
     database.execute_sql(
         "UPDATE encoding_jobs SET output_extension = '.mp4' "
         "WHERE audio_mode = 'flac24' "

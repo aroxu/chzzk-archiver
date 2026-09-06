@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Literal
+
 from pydantic import BaseModel
 
 
@@ -16,6 +18,10 @@ class SetupBody(LoginBody):
 
 class RegisterBody(LoginBody):
     invite: str
+
+
+class UserPreferencesBody(BaseModel):
+    audio_format: Literal["aac", "flac"]
 
 
 class SubscribeBody(BaseModel):
