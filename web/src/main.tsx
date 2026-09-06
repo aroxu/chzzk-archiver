@@ -73,11 +73,6 @@ type Recording = {
   progress?: number;
   speed_bps: number;
   eta_seconds?: number;
-  encoding_progress?: number;
-  encoding_speed?: number;
-  encoding_eta_seconds?: number;
-  encoding_processed_seconds?: number;
-  encoding_state?: string;
   recorded_seconds: number;
   duration_seconds: number;
   recording_active: boolean;
@@ -85,7 +80,7 @@ type Recording = {
   error?: string;
 };
 
-const IN_FLIGHT_STATES = new Set(["queued", "recording", "processing"]);
+const IN_FLIGHT_STATES = new Set(["queued", "recording"]);
 const MOTION_EASE = [0.22, 1, 0.36, 1] as const;
 
 const motionDuration = (reduceMotion: boolean | null, duration = 0.22) =>
@@ -303,9 +298,7 @@ const size = (n: number) => {
 const typeLabel = (type: Recording["type"]) =>
   type === "vod" ? "VIDEO" : type.toUpperCase();
 const stateLabel = (r: Recording) =>
-  r.state === "processing"
-    ? "ENCODING"
-    : r.state === "recording" || r.state === "queued"
+  r.state === "recording" || r.state === "queued"
       ? r.type === "live"
         ? "RECORDING"
         : "DOWNLOADING"
@@ -1151,9 +1144,12 @@ function ArchivePlayer({
     let disposed = false;
     let instance: HlsType | null = null;
     const source = audioOnly
-      ? `/api/media/${recording.id}/audio?format=${audioFormat}`
+      ? audioFormat === "aac"
+        ? `/api/hls/${recording.id}/audio.m3u8`
+        : `/api/media/${recording.id}/audio?format=flac`
       : `/api/hls/${recording.id}/master.m3u8`;
-    if (audioOnly || element.canPlayType("application/vnd.apple.mpegurl")) {
+    const hlsSource = !audioOnly || audioFormat === "aac";
+    if (!hlsSource || element.canPlayType("application/vnd.apple.mpegurl")) {
       element.src = source;
       element.load();
       return;
@@ -1923,12 +1919,7 @@ function RecordingGrid({
     <motion.div className="recording-grid" layout>
       <AnimatePresence initial={false} mode="popLayout">
         {recordings.map((r) => {
-          const progressValue =
-            r.state === "processing"
-              ? r.encoding_progress != null && r.encoding_progress > 0
-                ? r.encoding_progress
-                : undefined
-              : r.progress;
+          const progressValue = r.progress;
           return (
             <motion.article
               key={r.id}
@@ -1979,13 +1970,11 @@ function RecordingGrid({
               <div className="recording-meta">
                 <small>{r.channel}</small>
                 <h3>{r.title}</h3>
-                {(r.state === "recording" ||
-                  r.state === "queued" ||
-                  r.state === "processing") && (
+                {(r.state === "recording" || r.state === "queued") && (
                   <div
                     className={`download-progress ${r.type === "live" ? "live-recording-progress" : ""}`}
                   >
-                    {r.type === "live" && r.state !== "processing" && (
+                    {r.type === "live" && (
                       <div className="live-recording-status">
                         <div>
                           <span
@@ -2021,16 +2010,7 @@ function RecordingGrid({
                     )}
                     <div>
                       <span>
-                        {r.state === "processing"
-                          ? r.encoding_state === "finalizing"
-                            ? "MP4 마무리 중"
-                            : r.encoding_state === "uploading"
-                              ? "결과 전송 완료"
-                              : r.encoding_progress != null &&
-                                  r.encoding_progress > 0
-                                ? `HEVC 인코딩 ${r.encoding_progress.toFixed(1)}%`
-                                : `HEVC 인코딩 중 · ${mediaTime(r.encoding_processed_seconds || 0)}`
-                          : r.progress != null
+                        {r.progress != null
                             ? `${r.progress.toFixed(1)}%`
                             : "연결 중"}
                       </span>
@@ -2053,22 +2033,10 @@ function RecordingGrid({
                     />
                     <div className="download-eta">
                       <span>
-                        {r.state === "processing"
-                          ? r.encoding_state === "finalizing"
-                            ? "컨트롤러 처리 중"
-                            : r.encoding_speed && r.encoding_speed > 0
-                              ? `${r.encoding_speed.toFixed(2)}x 속도`
-                              : "인코더 준비 중"
-                          : speed(r.speed_bps)}
+                        {speed(r.speed_bps)}
                       </span>
                       <span>
-                        {r.state === "processing"
-                          ? r.encoding_state === "finalizing"
-                            ? "잠시만 기다려 주세요"
-                            : r.encoding_eta_seconds != null
-                              ? eta(r.encoding_eta_seconds)
-                              : "남은 시간 계산 중"
-                          : eta(r.eta_seconds)}
+                        {eta(r.eta_seconds)}
                       </span>
                     </div>
                   </div>
@@ -2079,17 +2047,13 @@ function RecordingGrid({
                 </p>
                 {r.error && <p className="error">{r.error}</p>}
                 <div className="recording-actions">
-                  {(r.state === "recording" ||
-                    r.state === "queued" ||
-                    r.state === "processing") && (
+                  {(r.state === "recording" || r.state === "queued") && (
                     <button
                       className="cancel"
                       disabled={pendingIds.has(r.id)}
                       onClick={() => cancel(r)}
                     >
-                      {r.state === "processing"
-                        ? "인코딩 취소"
-                        : r.type === "live"
+                      {r.type === "live"
                           ? "녹화 중단"
                           : "다운로드 취소"}
                     </button>

@@ -19,3 +19,4 @@ dist/
 *.spec
 *.log
 example_ignore/
+.tmp-hls-repro/

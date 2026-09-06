@@ -50,12 +50,19 @@ def resolve_streamlink(url: str, cookies: dict[str, str]) -> dict:
         raise RuntimeError("다운로드 가능한 스트림이 없습니다")
     available = [name for name in streams if name not in {"best", "worst"}]
     quality = next((q for q in ("1080p60", "1080p") if q in streams), None) or ("best" if "best" in streams else available[-1])
+    selected = streams[quality]
+    playback_url = getattr(selected, "url", None)
+    if not playback_url:
+        raise RuntimeError("HLS 재생 URL을 찾을 수 없습니다")
     return {
         "id": str(plugin.id or hashlib.sha256(url.encode()).hexdigest()[:20]),
         "title": plugin.title or "치지직 영상",
         "author": plugin.author or "치지직",
         "category": plugin.category,
         "quality": quality,
+        "playback_url": playback_url,
+        "protocol": "hls",
+        "total_size": 0,
     }
 
 

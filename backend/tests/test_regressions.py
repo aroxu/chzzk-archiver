@@ -2,6 +2,7 @@
 
 import asyncio
 import itertools
+from pathlib import Path
 
 from fastapi.testclient import TestClient
 
@@ -63,7 +64,6 @@ def test_progress_tick_cannot_resurrect_a_cancelled_recording():
 def test_completion_does_not_overwrite_a_cancel(monkeypatch, tmp_path):
     """Cancelling during thumbnail generation must still end up cancelled."""
     monkeypatch.setattr(recorder.settings, "recordings_dir", tmp_path)
-    monkeypatch.setattr(recorder.shutil, "which", lambda _name: None)
     monkeypatch.setattr(
         recorder.chzzk,
         "resolve_direct",
@@ -76,19 +76,16 @@ def test_completion_does_not_overwrite_a_cancel(monkeypatch, tmp_path):
     )
     rec = Recording.create(broadcast=broadcast.id, state="queued")
 
-    def write_file(_url, destination, *_args, **_kwargs):
-        destination.write_bytes(b"payload")
-
-    monkeypatch.setattr(recorder, "download_progressive", write_file)
-
     async def fake_subprocess(*args, **_kwargs):
         class Proc:
             returncode = 0
 
             async def communicate(self):
-                from pathlib import Path
-
-                Path(args[-1]).write_bytes(b"remuxed")
+                destination = Path(_kwargs["cwd"])
+                for name in ("video.m3u8", "audio.m3u8"):
+                    (destination / name).write_text("#EXTM3U\n")
+                for name in ("video-init.mp4", "audio-init.mp4", "video-segment_00000.m4s", "audio-segment_00000.m4s"):
+                    (destination / name).write_bytes(b"data")
                 return b"", b""
 
         return Proc()

@@ -6,12 +6,20 @@ from pathlib import Path
 from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse, RedirectResponse, StreamingResponse
 
 from ..db import db
 from ..models import User
 from ..security import current_user
-from ..services.media import generate_audio_assets, generate_hls_bundle, hls_directory, thumbnail_path
+from ..services.media import (
+    archive_directory,
+    generate_aac_hls,
+    generate_download_mp4,
+    generate_flac_asset,
+    migrate_legacy_recording,
+    thumbnail_path,
+    valid_hls_bundle,
+)
 from .recordings import entitled
 
 router = APIRouter()
@@ -55,7 +63,11 @@ def media(recording_id: int, request: Request, user: User = Depends(current_user
         raise HTTPException(409, "다운로드가 완료되지 않았습니다")
     if not rec.path or not Path(rec.path).exists():
         raise HTTPException(404, "파일이 없습니다")
-    path = Path(rec.path)
+    try:
+        source = Path(rec.path)
+        path = generate_download_mp4(source) if source.name == "master.m3u8" else source
+    except Exception as exc:
+        raise HTTPException(422, f"MP4 다운로드 파일을 만들 수 없습니다: {str(exc)[-500:]}") from exc
     range_header = request.headers.get("range")
     size = path.stat().st_size
     if not range_header:
@@ -112,7 +124,12 @@ def radio_audio(
         raise HTTPException(404, "파일이 없습니다")
     try:
         audio_format = requested_format or (user.audio_format if user.audio_format in {"aac", "flac"} else "aac")
-        path = generate_audio_assets(Path(rec.path))[audio_format]
+        if audio_format == "aac":
+            # AAC is already stored as an HLS audio rendition. Redirecting to
+            # its playlist keeps radio mode audio-only without duplicating it.
+            generate_aac_hls(Path(rec.path))
+            return RedirectResponse(f"/api/hls/{recording_id}/audio.m3u8", status_code=307)
+        path = generate_flac_asset(Path(rec.path))
     except Exception as exc:
         raise HTTPException(422, f"오디오 전용 스트림을 만들 수 없습니다: {str(exc)[-500:]}") from exc
     media_type = "audio/flac" if audio_format == "flac" else "audio/mp4"
@@ -131,13 +148,13 @@ def hls_asset(recording_id: int, asset_path: str, user: User = Depends(current_u
     rec = entitled(user, recording_id)
     if rec.state != "completed" or not rec.path or not Path(rec.path).exists():
         raise HTTPException(404, "재생할 파일이 없습니다")
-    video_path = Path(rec.path)
+    media_path = Path(rec.path)
     try:
-        audio_assets = generate_audio_assets(video_path)
-        generate_hls_bundle(video_path, audio_assets["aac"])
+        if media_path.name != "master.m3u8" or not valid_hls_bundle(media_path.parent):
+            media_path = migrate_legacy_recording(recording_id)
     except Exception as exc:
         raise HTTPException(422, f"HLS 스트림을 만들 수 없습니다: {str(exc)[-500:]}") from exc
-    root = hls_directory(video_path).resolve()
+    root = archive_directory(media_path).resolve()
     target = (root / asset_path).resolve()
     if not target.is_relative_to(root) or not target.is_file():
         raise HTTPException(404, "HLS 파일을 찾을 수 없습니다")

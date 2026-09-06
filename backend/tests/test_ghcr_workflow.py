@@ -16,10 +16,10 @@ def test_publish_workflow_is_valid_yaml_and_has_package_permission():
     assert workflow["permissions"]["packages"] == "write"
 
 
-def test_publish_workflow_builds_both_images_and_pushes_to_ghcr():
+def test_publish_workflow_builds_controller_and_pushes_to_ghcr():
     source = WORKFLOW.read_text(encoding="utf-8")
     assert "backend/Dockerfile" in source
-    assert "worker/Dockerfile" in source
+    assert "worker/Dockerfile" not in source
     assert "ghcr.io/${{ github.repository }}" in source
     assert "push: true" in source
     assert "linux/amd64,linux/arm64" in source
@@ -29,7 +29,7 @@ def test_publish_workflow_builds_both_images_and_pushes_to_ghcr():
 def test_compose_can_pull_published_images_without_building():
     compose = (ROOT / "docker-compose.yml").read_text(encoding="utf-8")
     assert "ghcr.io/aroxu/chzzk-archiver:latest" in compose
-    assert "ghcr.io/aroxu/chzzk-archiver-worker:latest" in compose
+    assert "chzzk-archiver-worker" not in compose
 
 
 def test_frontend_build_runs_once_on_the_native_build_platform():

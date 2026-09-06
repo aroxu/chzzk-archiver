@@ -134,7 +134,7 @@ async def start_live(body: StartLiveBody, user: User = Depends(current_user), _=
     # an explicit opt-in is exactly the request to start it again.
     rec, created = ensure_recording(ch, live, sorted(users), retry_states=("failed", "canceled"))
     # ensure_recording() reports created for a brand new row and for a failed row
-    # it reset to "queued", which is exactly when a worker needs scheduling.
+    # it reset to "queued", which is exactly when a capture task needs scheduling.
     if created:
         asyncio.create_task(run_recording(rec.id))
     audit(user.id, "subscribe.start_live", channel=cid, recording=rec.id, created=created)

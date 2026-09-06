@@ -16,10 +16,8 @@ from .models import Channel, Recording
 from .encoding_commands import probe_duration
 from .schema_migrations import migrate
 from .services import chzzk
-from .services.encoding import process_local_job, resume_local_jobs
-from .services.media import generate_thumbnail, migrate_legacy_recording, thumbnail_path
+from .services.media import STORAGE_VERSION, directory_size, generate_thumbnail, migrate_legacy_recording, thumbnail_path
 from .services.recorder import monitor_live_channels_once, run_recording
-from .services.stream_transport import start_stream_server
 
 
 async def scheduler() -> None:
@@ -83,13 +81,13 @@ async def migrate_legacy_media() -> None:
             for row in Recording.select(Recording.id).where(
                 Recording.state == "completed",
                 Recording.path.is_null(False),
-                Recording.storage_version < 2,
+                Recording.storage_version < STORAGE_VERSION,
             )
         ]
     for recording_id in recording_ids:
         try:
             await asyncio.to_thread(migrate_legacy_recording, recording_id)
-            logger.info("legacy media migrated recording=%s storage_version=2", recording_id)
+            logger.info("legacy media migrated recording=%s storage_version=%s", recording_id, STORAGE_VERSION)
         except Exception as exc:
             logger.warning(
                 "legacy media migration deferred recording=%s error=%s",
@@ -104,29 +102,6 @@ async def backfill_media_metadata() -> None:
     await migrate_legacy_media()
     await backfill_thumbnails()
     await backfill_durations()
-
-
-async def cleanup_completed_transports() -> None:
-    """Remove obsolete transport/container files paired with published MP4 archives."""
-    with session():
-        published = [
-            Path(row.path)
-            for row in Recording.select(Recording.path).where(
-                Recording.state == "completed", Recording.path.is_null(False)
-            )
-            if row.path and Path(row.path).suffix.lower() == ".mp4"
-        ]
-    for media_path in published:
-        for extension in (".ts", ".mkv"):
-            stale_path = media_path.with_suffix(extension)
-            try:
-                stale_path.unlink(missing_ok=True)
-            except OSError as exc:
-                logger.warning(
-                    "stale media cleanup failed path=%s error=%s",
-                    stale_path,
-                    str(exc)[:200],
-                )
 
 
 async def backfill_channel_profiles() -> None:
@@ -170,20 +145,21 @@ def partial_size(path: str | None) -> int | None:
     if not path:
         return None
     try:
-        return Path(path).stat().st_size
+        target = Path(path)
+        return directory_size(target) if target.exists() else None
     except OSError:
         # A removed or unreachable file must not block startup.
         return None
 
 
 def requeue_interrupted() -> list[int]:
-    """Collect recordings that need a worker after a restart.
+    """Collect recordings that need a capture task after a restart.
 
     ``queued`` rows are included because no task survives the process: a
     recording waiting on the concurrency semaphore would otherwise sit in the
     queue forever with nothing scheduled to pick it up.
 
-    A crashed worker stops updating ``size`` mid-capture, so the stored value
+    A crashed capture task stops updating ``size``, so the stored value
     trails the bytes actually on disk. Resynchronising here keeps the library
     honest even when the retry immediately fails because the stream ended.
     """
@@ -212,26 +188,19 @@ async def lifespan(_: FastAPI):
     with session():
         migrate()
     resume_ids = requeue_interrupted()
-    encoding_ids = resume_local_jobs()
-    stream_server = await start_stream_server()
     tasks = [
         asyncio.create_task(scheduler()),
         asyncio.create_task(backfill_media_metadata()),
-        asyncio.create_task(cleanup_completed_transports()),
         asyncio.create_task(backfill_channel_profiles()),
     ]
     tasks += [asyncio.create_task(run_recording(rid)) for rid in resume_ids]
-    tasks += [asyncio.create_task(process_local_job(jid)) for jid in encoding_ids]
     try:
         yield
     finally:
-        # Cancel every task before closing the database so no worker touches a
+        # Cancel every task before closing the database so no task touches a
         # dead connection on the way out.
         for task in tasks:
             task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
-        if stream_server:
-            stream_server.close()
-            await stream_server.wait_closed()
         if not database.is_closed():
             database.close()

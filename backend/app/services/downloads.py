@@ -9,7 +9,7 @@ from pathlib import Path
 
 import httpx
 
-from ..config import logger, settings
+from ..config import logger
 from ..db import session
 from ..models import Recording
 from .state import DownloadCancelled, active_processes
@@ -50,7 +50,7 @@ async def download_progressive_aria2(
     total_size: int,
 ) -> None:
     cookie_header = "; ".join(f"{key}={value}" for key, value in cookies.items())
-    connections = max(1, min(16, settings.download_connections))
+    connections = 16
     args = [
         "aria2c", "--continue=true",
         f"--max-connection-per-server={connections}", f"--split={connections}",

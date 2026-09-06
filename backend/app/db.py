@@ -40,7 +40,7 @@ database = SqliteDatabase(
     pragmas={"journal_mode": "wal", "foreign_keys": 1, "synchronous": 1},
     check_same_thread=False,
     autoconnect=True,
-    # WAL allows one writer at a time. Recording workers publish progress from
+    # WAL allows one writer at a time. Capture tasks publish progress from
     # threads while HTTP requests write too, so a bare connection would raise
     # "database is locked" instead of waiting its turn.
     timeout=settings.database_timeout,

@@ -13,3 +13,4 @@ class DownloadCancelled(Exception):
 
 recording_semaphore = asyncio.Semaphore(settings.max_recordings)
 active_processes: dict[int, asyncio.subprocess.Process] = {}
+active_captures: set[int] = set()

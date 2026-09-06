@@ -13,7 +13,7 @@ from fastapi.staticfiles import StaticFiles
 
 from .config import settings
 from .lifecycle import lifespan
-from .routers import admin, auth, extension, media, recordings, subscriptions, workers
+from .routers import admin, auth, extension, media, recordings, subscriptions
 
 app = FastAPI(title="CHZZK Archive", lifespan=lifespan)
 
@@ -29,7 +29,6 @@ app.include_router(recordings.router)
 app.include_router(media.router)
 app.include_router(extension.router)
 app.include_router(admin.router)
-app.include_router(workers.router)
 
 if settings.web_dist.exists():
     app.mount("/assets", StaticFiles(directory=settings.web_dist / "assets"), name="assets")

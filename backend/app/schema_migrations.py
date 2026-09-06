@@ -14,16 +14,6 @@ RECORDING_COLUMNS = {
     "started_at": "DATETIME",
 }
 
-ENCODING_COLUMNS = {
-    "source_path": "TEXT",
-    "used_encoder": "VARCHAR(40)",
-    "progress": "REAL DEFAULT 0",
-    "processed_seconds": "REAL DEFAULT 0",
-    "duration_seconds": "REAL DEFAULT 0",
-    "encoding_speed": "REAL DEFAULT 0",
-    "eta_seconds": "INTEGER",
-}
-
 USER_COLUMNS = {
     "audio_format": "VARCHAR(8) NOT NULL DEFAULT 'aac'",
 }
@@ -45,12 +35,6 @@ def migrate() -> None:
     for column, definition in RECORDING_COLUMNS.items():
         if column not in existing:
             database.execute_sql(f"ALTER TABLE recordings ADD COLUMN {column} {definition}")
-    encoding_existing = {
-        row[1] for row in database.execute_sql("PRAGMA table_info(encoding_jobs)")
-    }
-    for column, definition in ENCODING_COLUMNS.items():
-        if column not in encoding_existing:
-            database.execute_sql(f"ALTER TABLE encoding_jobs ADD COLUMN {column} {definition}")
     user_existing = {row[1] for row in database.execute_sql("PRAGMA table_info(users)")}
     for column, definition in USER_COLUMNS.items():
         if column not in user_existing:
@@ -68,10 +52,11 @@ def migrate() -> None:
             "WHERE (image_url IS NOT NULL AND image_url != '') "
             "OR chzzk_id LIKE 'vod:%' OR chzzk_id LIKE 'clip:%'"
         )
+    # Older releases could stop between capture and remote/local HEVC work.
+    # The original media remains usable and will be migrated to v3 HLS.
     database.execute_sql(
-        "UPDATE encoding_jobs SET output_extension = '.mp4' "
-        "WHERE audio_mode = 'flac24' "
-        "AND state IN ('queued', 'leased', 'encoding', 'uploading')"
+        "UPDATE recordings SET state = 'completed', error = NULL "
+        "WHERE state = 'processing' AND path IS NOT NULL"
     )
     database.execute_sql(
         "UPDATE recordings SET started_at = created_at "

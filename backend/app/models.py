@@ -134,67 +134,6 @@ class Recording(BaseModel):
         indexes = ((("created_at",), False),)
 
 
-class WorkerNode(BaseModel):
-    """A remote encoder that polls the controller for leased work."""
-
-    id = CharField(max_length=120, primary_key=True)
-    hostname = CharField(max_length=255)
-    platform = CharField(max_length=80)
-    encoders = TextField(default="[]")
-    version = CharField(max_length=40, default="unknown")
-    last_seen_at = DateTimeField(default=utcnow, index=True)
-
-    class Meta:
-        table_name = "worker_nodes"
-
-
-class EncodingJob(BaseModel):
-    """Durable lease-backed encoding work associated with one recording."""
-
-    recording = ForeignKeyField(
-        Recording,
-        field=Recording.id,
-        column_name="recording_id",
-        backref="encoding_jobs",
-        on_delete="CASCADE",
-        unique=True,
-        index=True,
-    )
-    state = CharField(max_length=20, default="queued", index=True)
-    worker = ForeignKeyField(
-        WorkerNode,
-        field=WorkerNode.id,
-        column_name="worker_id",
-        backref="jobs",
-        on_delete="SET NULL",
-        null=True,
-    )
-    video_encoder = CharField(max_length=40, default="auto")
-    # The encoder that actually ran, which may differ from the request when
-    # "auto" resolves to a GPU or falls back to software.
-    used_encoder = CharField(max_length=40, null=True)
-    quality = IntegerField(default=23)
-    preset = CharField(max_length=40, default="medium")
-    audio_mode = CharField(max_length=20, default="copy")
-    output_extension = CharField(max_length=8, default=".mp4")
-    source_path = TextField(null=True)
-    progress = FloatField(default=0)
-    processed_seconds = FloatField(default=0)
-    duration_seconds = FloatField(default=0)
-    encoding_speed = FloatField(default=0)
-    eta_seconds = IntegerField(null=True)
-    attempts = IntegerField(default=0)
-    lease_expires_at = DateTimeField(null=True, index=True)
-    upload_path = TextField(null=True)
-    error = TextField(null=True)
-    created_at = DateTimeField(default=utcnow)
-    started_at = DateTimeField(null=True)
-    finished_at = DateTimeField(null=True)
-
-    class Meta:
-        table_name = "encoding_jobs"
-
-
 class Entitlement(BaseModel):
     id = AutoField()
     user = ForeignKeyField(User, field=User.id, column_name="user_id", backref="entitlements", on_delete="CASCADE", index=True)
@@ -256,8 +195,6 @@ ALL_MODELS = [
     Subscription,
     Broadcast,
     Recording,
-    WorkerNode,
-    EncodingJob,
     Entitlement,
     Credential,
     Invite,

@@ -6,8 +6,6 @@ DATA_DIR.mkdir(parents=True, exist_ok=True)
 
 os.environ.setdefault("ARCHIVER_DATABASE_URL", f"sqlite:///{DATA_DIR / 'test.db'}")
 os.environ.setdefault("ARCHIVER_SECRET_KEY", "test-secret")
-os.environ.setdefault("ARCHIVER_ENCODING_MODE", "disabled")
-
 import pytest
 
 from app.db import database

@@ -11,12 +11,12 @@ from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 
 from ..config import settings
 from ..db import database, db
-from ..models import Broadcast, Channel, EncodingJob, Entitlement, Recording, Subscription, User
+from ..models import Broadcast, Channel, Entitlement, Recording, Subscription, User
 from ..schemas import ManualDownloadBody
 from ..security import admin, audit, current_user
 from ..services import chzzk
 from ..services.credentials import user_cookies
-from ..services.media import audio_asset_path, hls_directory, recording_json, thumbnail_path
+from ..services.media import archive_directory, audio_asset_path, recording_json, thumbnail_path
 from ..services.recorder import ensure_recording, redact, run_recording
 from ..services.state import active_processes
 
@@ -32,9 +32,9 @@ def _delete_artifact(path: Path) -> None:
     target.unlink(missing_ok=True)
 
 
-def _purge_recording_files(rec: Recording, job: EncodingJob | None) -> None:
+def _purge_recording_files(rec: Recording) -> None:
     paths: set[Path] = set()
-    for value in (rec.path, job.source_path if job else None, job.upload_path if job else None):
+    for value in (rec.path,):
         if not value:
             continue
         media = Path(value)
@@ -49,11 +49,7 @@ def _purge_recording_files(rec: Recording, job: EncodingJob | None) -> None:
                 audio_asset_path(media, "flac"),
             }
         )
-        paths.add(hls_directory(media))
-    if job and rec.path:
-        source = Path(rec.path)
-        paths.add(source.with_name(f".{source.stem}.publish-{job.id}.mp4"))
-        paths.add(source.with_name(f".{source.stem}.local-{job.id}.part{job.output_extension}"))
+        paths.add(archive_directory(media))
     for path in paths:
         if path.is_dir():
             root = settings.recordings_dir.resolve()
@@ -149,11 +145,7 @@ async def manual(
     if should_start:
         if rec.path and not rec.path.endswith(".ts"):
             previous_media = Path(rec.path)
-            previous_media.unlink(missing_ok=True)
-            thumbnail_path(previous_media).unlink(missing_ok=True)
-            audio_asset_path(previous_media, "aac").unlink(missing_ok=True)
-            audio_asset_path(previous_media, "flac").unlink(missing_ok=True)
-            shutil.rmtree(hls_directory(previous_media), ignore_errors=True)
+            _purge_recording_files(rec)
             rec.path = None
             rec.size = 0
             rec.total_size = 0
@@ -178,13 +170,9 @@ def remove_recording(recording_id: int, user: User = Depends(current_user), _=De
         Entitlement.user == user.id, Entitlement.recording == recording_id
     ).execute()
     remaining = Entitlement.select().where(Entitlement.recording == recording_id).exists()
-    if not remaining and rec.state not in ("queued", "recording", "processing"):
+    if not remaining and rec.state not in ("queued", "recording"):
         if rec.path:
-            Path(rec.path).unlink(missing_ok=True)
-            thumbnail_path(Path(rec.path)).unlink(missing_ok=True)
-            audio_asset_path(Path(rec.path), "aac").unlink(missing_ok=True)
-            audio_asset_path(Path(rec.path), "flac").unlink(missing_ok=True)
-            shutil.rmtree(hls_directory(Path(rec.path)), ignore_errors=True)
+            _purge_recording_files(rec)
         rec.delete_instance()
 
 
@@ -194,17 +182,15 @@ def purge_recording(recording_id: int, user: User = Depends(admin), _=Depends(db
     rec = Recording.get_or_none(Recording.id == recording_id)
     if not rec:
         raise HTTPException(404, "아카이브를 찾을 수 없습니다")
-    if rec.state in {"queued", "recording", "processing"}:
+    if rec.state in {"queued", "recording"}:
         raise HTTPException(409, "진행 중인 작업을 먼저 중단한 뒤 삭제하세요")
-    job = EncodingJob.get_or_none(EncodingJob.recording == recording_id)
     try:
-        _purge_recording_files(rec, job)
+        _purge_recording_files(rec)
     except (OSError, RuntimeError) as exc:
         raise HTTPException(409, f"아카이브 파일을 삭제할 수 없습니다: {exc}") from exc
     title = rec.broadcast.title
     with database.atomic():
         Entitlement.delete().where(Entitlement.recording == recording_id).execute()
-        EncodingJob.delete().where(EncodingJob.recording == recording_id).execute()
         Recording.delete().where(Recording.id == recording_id).execute()
         audit(user.id, "recording.purge", recording_id=recording_id, title=title)
 
@@ -212,18 +198,11 @@ def purge_recording(recording_id: int, user: User = Depends(admin), _=Depends(db
 @router.post("/api/recordings/{recording_id}/cancel", status_code=204)
 def cancel_recording(recording_id: int, user: User = Depends(current_user), _=Depends(db)):
     rec = entitled(user, recording_id)
-    if rec.state not in {"queued", "recording", "processing"}:
+    if rec.state not in {"queued", "recording"}:
         raise HTTPException(409, "진행 중인 작업이 아닙니다")
     rec.state = "canceled"
     rec.finished_at = datetime.now(UTC)
     rec.save()
-    job = EncodingJob.get_or_none(EncodingJob.recording == recording_id)
-    if job:
-        if job.upload_path:
-            Path(job.upload_path).unlink(missing_ok=True)
-        EncodingJob.update(state="canceled", finished_at=datetime.now(UTC)).where(
-            EncodingJob.id == job.id
-        ).execute()
     process = active_processes.get(recording_id)
     if process and process.returncode is None:
         process.terminate()
