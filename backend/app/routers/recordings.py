@@ -123,7 +123,14 @@ async def manual(
         virtual_id = f"{kind}:{content_id}"[:64]
         ch = Channel.get_or_none(Channel.chzzk_id == virtual_id)
         if not ch:
-            ch = Channel.create(chzzk_id=virtual_id, name=metadata["author"])
+            ch = Channel.create(
+                chzzk_id=virtual_id,
+                name=metadata["author"],
+                profile_backfilled=True,
+            )
+        elif not ch.profile_backfilled:
+            ch.profile_backfilled = True
+            ch.save(only=[Channel.profile_backfilled])
         users = [user.id]
     live = {
         "id": f"{kind}:{metadata['id']}",

@@ -2,6 +2,7 @@ import asyncio
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
 from fastapi.testclient import TestClient
 
 from app import lifecycle
@@ -101,21 +102,25 @@ def test_hls_bundle_uses_portable_flat_output_paths(monkeypatch, tmp_path):
     video.write_bytes(b"video")
     audio = audio_asset_path(video, "aac")
     audio.write_bytes(b"audio")
-    observed = {}
+    incomplete = hls_directory(video)
+    incomplete.mkdir()
+    (incomplete / "master.m3u8").write_text("#EXTM3U\n", encoding="utf-8")
+    (incomplete / "audio.m3u8").write_text("#EXTM3U\n", encoding="utf-8")
+    (incomplete / "audio-init.mp4").write_bytes(b"init")
+    (incomplete / "audio-segment_00000.m4s").write_bytes(b"segment")
+    observed = []
 
     def fake_run(command, **kwargs):
         workdir = Path(kwargs["cwd"])
-        observed["command"] = command
-        observed["cwd"] = workdir
-        (workdir / "master.m3u8").write_text("#EXTM3U\nvideo.m3u8\n", encoding="utf-8")
-        (workdir / "video.m3u8").write_text(
-            '#EXTM3U\n#EXT-X-MAP:URI="video-init.mp4"\nvideo-segment_00000.m4s\n',
+        variant = Path(command[-1]).stem
+        observed.append((variant, command, workdir))
+        (workdir / f"{variant}.m3u8").write_text(
+            f'#EXTM3U\n#EXT-X-MAP:URI="{variant}-init.mp4"\n'
+            f"{variant}-segment_00000.m4s\n",
             encoding="utf-8",
         )
-        (workdir / "audio.m3u8").write_text(
-            '#EXTM3U\n#EXT-X-MAP:URI="audio-init.mp4"\naudio-segment_00000.m4s\n',
-            encoding="utf-8",
-        )
+        (workdir / f"{variant}-init.mp4").write_bytes(b"init")
+        (workdir / f"{variant}-segment_00000.m4s").write_bytes(b"segment")
         return SimpleNamespace(returncode=0, stderr=b"")
 
     monkeypatch.setattr(media_service.subprocess, "run", fake_run)
@@ -123,11 +128,38 @@ def test_hls_bundle_uses_portable_flat_output_paths(monkeypatch, tmp_path):
 
     assert master == hls_directory(video) / "master.m3u8"
     assert master.exists()
-    assert observed["cwd"].name.endswith(".part")
-    command = observed["command"]
-    assert command[command.index("-hls_fmp4_init_filename") + 1] == "%v-init.mp4"
-    assert command[command.index("-hls_segment_filename") + 1] == "%v-segment_%05d.m4s"
-    assert command[-1] == "%v.m3u8"
+    assert [variant for variant, _command, _workdir in observed] == ["video", "audio"]
+    for variant, command, workdir in observed:
+        assert workdir.name.endswith(".part")
+        assert command[command.index("-hls_fmp4_init_filename") + 1] == f"{variant}-init.mp4"
+        assert command[command.index("-hls_segment_filename") + 1] == f"{variant}-segment_%05d.m4s"
+        assert command[-1] == f"{variant}.m3u8"
+    assert 'URI="audio.m3u8"' in master.read_text(encoding="utf-8")
+    assert master.read_text(encoding="utf-8").endswith("video.m3u8\n")
+
+
+def test_hls_bundle_rejects_audio_only_partial_output(monkeypatch, tmp_path):
+    from app.services import media as media_service
+
+    video = tmp_path / "sample.mp4"
+    video.write_bytes(b"video")
+    audio = audio_asset_path(video, "aac")
+    audio.write_bytes(b"audio")
+
+    def fake_run(command, **kwargs):
+        workdir = Path(kwargs["cwd"])
+        variant = Path(command[-1]).stem
+        if variant == "audio":
+            (workdir / "audio.m3u8").write_text("#EXTM3U\n", encoding="utf-8")
+            (workdir / "audio-init.mp4").write_bytes(b"init")
+            (workdir / "audio-segment_00000.m4s").write_bytes(b"segment")
+        return SimpleNamespace(returncode=0, stderr=b"")
+
+    monkeypatch.setattr(media_service.subprocess, "run", fake_run)
+
+    with pytest.raises(RuntimeError, match="video HLS 생성 실패"):
+        media_service.generate_hls_bundle(video, audio)
+    assert not hls_directory(video).exists()
 
 
 def test_legacy_combined_archive_is_migrated_to_split_v2_storage(monkeypatch, tmp_path):

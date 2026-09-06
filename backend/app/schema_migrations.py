@@ -28,6 +28,10 @@ USER_COLUMNS = {
     "audio_format": "VARCHAR(8) NOT NULL DEFAULT 'aac'",
 }
 
+CHANNEL_COLUMNS = {
+    "profile_backfilled": "INTEGER NOT NULL DEFAULT 0",
+}
+
 
 def migrate() -> None:
     """Create missing tables and backfill columns added after the first release."""
@@ -51,6 +55,19 @@ def migrate() -> None:
     for column, definition in USER_COLUMNS.items():
         if column not in user_existing:
             database.execute_sql(f"ALTER TABLE users ADD COLUMN {column} {definition}")
+    channel_existing = {row[1] for row in database.execute_sql("PRAGMA table_info(channels)")}
+    added_profile_backfilled = "profile_backfilled" not in channel_existing
+    for column, definition in CHANNEL_COLUMNS.items():
+        if column not in channel_existing:
+            database.execute_sql(f"ALTER TABLE channels ADD COLUMN {column} {definition}")
+    if added_profile_backfilled:
+        # Preserve successful work from older releases and permanently exclude
+        # virtual VOD/clip owners, which are not CHZZK channel identifiers.
+        database.execute_sql(
+            "UPDATE channels SET profile_backfilled = 1 "
+            "WHERE (image_url IS NOT NULL AND image_url != '') "
+            "OR chzzk_id LIKE 'vod:%' OR chzzk_id LIKE 'clip:%'"
+        )
     database.execute_sql(
         "UPDATE encoding_jobs SET output_extension = '.mp4' "
         "WHERE audio_mode = 'flac24' "

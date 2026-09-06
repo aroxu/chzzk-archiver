@@ -131,13 +131,21 @@ async def cleanup_completed_transports() -> None:
 
 async def backfill_channel_profiles() -> None:
     with session():
-        # Filter in SQL so startup does not pull every channel into memory.
+        # VOD/clip owners are virtual rows rather than CHZZK channel IDs. Mark
+        # them complete once so old databases never retry them on startup.
+        Channel.update(profile_backfilled=True).where(
+            (Channel.profile_backfilled == False)  # noqa: E712
+            & (
+                Channel.chzzk_id.startswith("vod:")
+                | Channel.chzzk_id.startswith("clip:")
+            )
+        ).execute()
+        # Completion is persisted separately from image availability because a
+        # valid channel profile may legitimately have no image.
         channels = [
             (row.id, row.chzzk_id)
             for row in Channel.select(Channel.id, Channel.chzzk_id).where(
-                Channel.name.startswith("채널 ")
-                | Channel.image_url.is_null(True)
-                | (Channel.image_url == "")
+                Channel.profile_backfilled == False  # noqa: E712
             )
         ]
     if not channels:
@@ -151,6 +159,7 @@ async def backfill_channel_profiles() -> None:
                     if channel:
                         channel.name = profile["name"]
                         channel.image_url = profile.get("image")
+                        channel.profile_backfilled = True
                         channel.save()
             except Exception as exc:
                 logger.warning("channel profile backfill failed channel=%s error=%s", chzzk_id, type(exc).__name__)

@@ -95,6 +95,24 @@ def hls_directory(video_path: Path) -> Path:
     return video_path.with_suffix(".hls")
 
 
+def _valid_hls_bundle(directory: Path) -> bool:
+    required = (
+        directory / "master.m3u8",
+        directory / "video.m3u8",
+        directory / "video-init.mp4",
+        directory / "audio.m3u8",
+        directory / "audio-init.mp4",
+    )
+    try:
+        return (
+            all(path.is_file() and path.stat().st_size > 0 for path in required)
+            and any(path.stat().st_size > 0 for path in directory.glob("video-segment_*.m4s"))
+            and any(path.stat().st_size > 0 for path in directory.glob("audio-segment_*.m4s"))
+        )
+    except OSError:
+        return False
+
+
 def generate_hls_bundle(video_path: Path, aac_path: Path) -> Path:
     """Package the split video and AAC delivery track as VOD HLS."""
     destination = hls_directory(video_path)
@@ -103,58 +121,94 @@ def generate_hls_bundle(video_path: Path, aac_path: Path) -> Path:
         lock = _hls_locks.setdefault(video_path, threading.Lock())
     with lock:
         newest_source = max(video_path.stat().st_mtime_ns, aac_path.stat().st_mtime_ns)
-        if master.exists() and master.stat().st_size > 0 and master.stat().st_mtime_ns >= newest_source:
+        if _valid_hls_bundle(destination) and master.stat().st_mtime_ns >= newest_source:
             return master
         temporary = destination.with_name(f".{destination.name}.{threading.get_ident()}.part")
         shutil.rmtree(temporary, ignore_errors=True)
         temporary.mkdir(parents=True)
         try:
-            result = subprocess.run(
-                [
-                    "ffmpeg",
-                    "-y",
-                    "-hide_banner",
-                    "-loglevel",
-                    "error",
-                    "-i",
-                    str(video_path.resolve()),
-                    "-i",
-                    str(aac_path.resolve()),
-                    "-map",
-                    "0:v:0",
-                    "-map",
-                    "1:a:0",
-                    "-c:v",
-                    "copy",
-                    "-c:a",
-                    "copy",
-                    "-f",
-                    "hls",
-                    "-hls_time",
-                    "6",
-                    "-hls_playlist_type",
-                    "vod",
-                    "-hls_segment_type",
-                    "fmp4",
-                    "-hls_fmp4_init_filename",
-                    "%v-init.mp4",
-                    "-hls_flags",
-                    "independent_segments",
-                    "-master_pl_name",
-                    "master.m3u8",
-                    "-var_stream_map",
-                    "v:0,agroup:audio,name:video a:0,agroup:audio,default:yes,name:audio",
-                    "-hls_segment_filename",
-                    "%v-segment_%05d.m4s",
-                    "%v.m3u8",
-                ],
-                capture_output=True,
-                check=False,
-                cwd=temporary,
+            common = [
+                "-f",
+                "hls",
+                "-hls_time",
+                "6",
+                "-hls_playlist_type",
+                "vod",
+                "-hls_segment_type",
+                "fmp4",
+            ]
+            variants = (
+                (
+                    "video",
+                    [
+                        "-i",
+                        str(video_path.resolve()),
+                        "-map",
+                        "0:v:0",
+                        "-an",
+                        "-c:v",
+                        "copy",
+                        *common,
+                        "-hls_flags",
+                        "independent_segments",
+                    ],
+                ),
+                (
+                    "audio",
+                    [
+                        "-i",
+                        str(aac_path.resolve()),
+                        "-map",
+                        "0:a:0",
+                        "-vn",
+                        "-c:a",
+                        "copy",
+                        *common,
+                    ],
+                ),
             )
+            for variant, arguments in variants:
+                result = subprocess.run(
+                    [
+                        "ffmpeg",
+                        "-y",
+                        "-hide_banner",
+                        "-loglevel",
+                        "error",
+                        *arguments,
+                        "-hls_fmp4_init_filename",
+                        f"{variant}-init.mp4",
+                        "-hls_segment_filename",
+                        f"{variant}-segment_%05d.m4s",
+                        f"{variant}.m3u8",
+                    ],
+                    capture_output=True,
+                    check=False,
+                    cwd=temporary,
+                )
+                required = (temporary / f"{variant}.m3u8", temporary / f"{variant}-init.mp4")
+                segments = list(temporary.glob(f"{variant}-segment_*.m4s"))
+                if (
+                    result.returncode != 0
+                    or any(not path.is_file() or path.stat().st_size == 0 for path in required)
+                    or not segments
+                    or any(path.stat().st_size == 0 for path in segments)
+                ):
+                    error = result.stderr.decode(errors="replace")[-1000:]
+                    raise RuntimeError(f"{variant} HLS 생성 실패: {error or '필수 파일 누락'}")
+
             generated_master = temporary / "master.m3u8"
-            if result.returncode != 0 or not generated_master.exists():
-                raise RuntimeError(result.stderr.decode(errors="replace")[-1000:])
+            generated_master.write_text(
+                "#EXTM3U\n"
+                "#EXT-X-VERSION:7\n"
+                '#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="audio",NAME="AAC",'
+                'DEFAULT=YES,AUTOSELECT=YES,URI="audio.m3u8"\n'
+                '#EXT-X-STREAM-INF:BANDWIDTH=8000000,AUDIO="audio"\n'
+                "video.m3u8\n",
+                encoding="utf-8",
+            )
+            if not _valid_hls_bundle(temporary):
+                raise RuntimeError("HLS 필수 영상/오디오 파일 검증 실패")
             # HLS URIs are URLs, so normalize separators if FFmpeg emits native
             # Windows paths. All generated names are relative to this bundle.
             for playlist in temporary.rglob("*.m3u8"):

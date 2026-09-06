@@ -493,6 +493,7 @@ async def monitor_live_channels_once() -> list[int]:
                 channel.name = live["author"]
             if live.get("channel_image"):
                 channel.image_url = live["channel_image"]
+            channel.profile_backfilled = True
             channel.save()
             users = [
                 row.user_id

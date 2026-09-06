@@ -75,6 +75,7 @@ class Channel(BaseModel):
     chzzk_id = CharField(max_length=64, unique=True, index=True)
     name = CharField(max_length=120, default="알 수 없는 채널")
     image_url = TextField(null=True)
+    profile_backfilled = BooleanField(default=False)
     last_live = BooleanField(default=False)
 
     class Meta:

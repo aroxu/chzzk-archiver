@@ -59,10 +59,16 @@ async def subscribe(body: SubscribeBody, user: User = Depends(current_user), _=D
     with database.atomic():
         ch = Channel.get_or_none(Channel.chzzk_id == cid)
         if not ch:
-            ch = Channel.create(chzzk_id=cid, name=profile["name"], image_url=profile.get("image"))
+            ch = Channel.create(
+                chzzk_id=cid,
+                name=profile["name"],
+                image_url=profile.get("image"),
+                profile_backfilled=True,
+            )
         else:
             ch.name = profile["name"]
             ch.image_url = profile.get("image")
+            ch.profile_backfilled = True
             ch.save()
         sub = Subscription.get_or_none(Subscription.user == user.id, Subscription.channel == ch.id)
         if sub:

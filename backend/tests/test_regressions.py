@@ -24,6 +24,29 @@ def _recording(state: str = "recording") -> Recording:
     return Recording.create(broadcast=broadcast.id, state=state)
 
 
+def test_channel_profile_backfill_is_persisted_and_virtual_channels_are_skipped(monkeypatch):
+    actual = Channel.create(chzzk_id="a" * 32, name="채널 unknown")
+    virtual = Channel.create(chzzk_id="vod:14697712", name="VOD 작성자")
+    calls = []
+
+    async def profile(channel_id, _client=None):
+        calls.append(channel_id)
+        return {"name": "실제 채널", "image": None}
+
+    monkeypatch.setattr(lifecycle.chzzk, "fetch_channel_profile", profile)
+
+    asyncio.run(lifecycle.backfill_channel_profiles())
+    asyncio.run(lifecycle.backfill_channel_profiles())
+
+    assert calls == [actual.chzzk_id]
+    actual = Channel.get_by_id(actual.id)
+    virtual = Channel.get_by_id(virtual.id)
+    assert actual.name == "실제 채널"
+    assert actual.image_url is None
+    assert actual.profile_backfilled is True
+    assert virtual.profile_backfilled is True
+
+
 def test_progress_tick_cannot_resurrect_a_cancelled_recording():
     """A tick that read the row before the cancel must not undo it."""
     rec = _recording()
