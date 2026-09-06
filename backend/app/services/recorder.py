@@ -209,8 +209,13 @@ async def run_recording(recording_id: int) -> None:
                         cookies,
                     )
                     playback_url = resolved["playback_url"]
+                    logger.info(
+                        "recording=%s source resolved protocol=%s estimated_bytes=%s",
+                        recording_id, resolved.get("protocol"), resolved.get("total_size") or 0,
+                    )
                 except Exception as exc:
                     errors.append(str(exc))
+                    logger.warning("recording=%s source resolve failed attempt=%s error=%s", recording_id, len(errors), _redact(str(exc))[-300:])
                     continue
                 if resolved.get("protocol") == "hls":
                     try:
@@ -228,6 +233,7 @@ async def run_recording(recording_id: int) -> None:
                         raise
                     except Exception as exc:
                         errors.append(str(exc))
+                        logger.warning("recording=%s hls mirror failed attempt=%s error=%s", recording_id, len(errors), _redact(str(exc))[-300:])
                         continue
                 command = _capture_command(playback_url, source_url, cookies, temporary, source_type)
                 proc = await asyncio.create_subprocess_exec(
@@ -251,6 +257,7 @@ async def run_recording(recording_id: int) -> None:
                 if proc.returncode == 0 or (source_type == "live" and valid_hls_bundle_after_masterless(temporary)):
                     break
                 errors.append(stderr.decode(errors="replace")[-1000:])
+                logger.warning("recording=%s ffmpeg capture failed returncode=%s error=%s", recording_id, proc.returncode, _redact(errors[-1])[-300:])
             else:
                 raise RuntimeError("; ".join(errors))
             master = temporary / "master.m3u8" if mirrored else finalize_hls_bundle(temporary)

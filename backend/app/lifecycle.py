@@ -84,6 +84,8 @@ async def migrate_legacy_media() -> None:
                 Recording.storage_version < STORAGE_VERSION,
             )
         ]
+    if recording_ids:
+        logger.info("legacy media migration queue count=%s target_storage_version=%s", len(recording_ids), STORAGE_VERSION)
     for recording_id in recording_ids:
         try:
             await asyncio.to_thread(migrate_legacy_recording, recording_id)

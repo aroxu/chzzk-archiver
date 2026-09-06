@@ -10,7 +10,7 @@ from contextlib import suppress
 from datetime import UTC, datetime
 from pathlib import Path
 
-from ..config import settings
+from ..config import logger, settings
 from ..db import session
 from ..encoding_commands import probe_duration
 from ..models import Recording, as_utc
@@ -159,6 +159,10 @@ def package_media_as_hls(
     transcode_h264: bool = False,
 ) -> Path:
     """Package local media as split fMP4 HLS, optionally converting HEVC to H.264."""
+    logger.info(
+        "hls package started source=%s destination=%s transcode_h264=%s",
+        source.name, destination, transcode_h264,
+    )
     temporary = destination.with_name(f".{destination.name}.{threading.get_ident()}.part")
     shutil.rmtree(temporary, ignore_errors=True)
     temporary.mkdir(parents=True)
@@ -168,6 +172,7 @@ def package_media_as_hls(
         finalize_hls_bundle(temporary)
         shutil.rmtree(destination, ignore_errors=True)
         temporary.replace(destination)
+        logger.info("hls package completed destination=%s bytes=%s", destination, directory_size(destination))
         return destination / "master.m3u8"
     finally:
         shutil.rmtree(temporary, ignore_errors=True)
@@ -187,7 +192,9 @@ def generate_flac_asset(media_path: Path) -> Path:
     destination = audio_asset_path(media_path, "flac")
     with _lock(destination):
         if _nonempty(destination):
+            logger.info("flac asset cache hit path=%s bytes=%s", destination, destination.stat().st_size)
             return destination
+        logger.info("flac asset generation started source=%s destination=%s", media_path, destination)
         source = archive_directory(media_path) / "audio.m3u8" if media_path.name == "master.m3u8" else media_path
         temporary = destination.with_name(f".{destination.name}.{threading.get_ident()}.part")
         try:
@@ -202,6 +209,7 @@ def generate_flac_asset(media_path: Path) -> Path:
             if not _nonempty(temporary):
                 raise RuntimeError("ffmpeg did not create FLAC audio")
             temporary.replace(destination)
+            logger.info("flac asset generation completed path=%s bytes=%s", destination, destination.stat().st_size)
             return destination
         finally:
             temporary.unlink(missing_ok=True)
@@ -258,9 +266,11 @@ def generate_download_mp4(media_path: Path) -> Path:
     destination = download_path(media_path)
     with _lock(destination):
         if _nonempty(destination):
+            logger.info("mp4 download cache hit path=%s bytes=%s", destination, destination.stat().st_size)
             return destination
         source = media_path if media_path.name == "master.m3u8" else archive_directory(media_path) / "master.m3u8"
         temporary = destination.with_name(f".{destination.name}.{threading.get_ident()}.part.mp4")
+        logger.info("mp4 stream-copy remux started source=%s destination=%s", source, destination)
         try:
             result = subprocess.run(
                 [
@@ -272,6 +282,7 @@ def generate_download_mp4(media_path: Path) -> Path:
             if result.returncode or not _nonempty(temporary):
                 raise RuntimeError(result.stderr.decode(errors="replace")[-1000:])
             temporary.replace(destination)
+            logger.info("mp4 stream-copy remux completed path=%s bytes=%s", destination, destination.stat().st_size)
             return destination
         finally:
             temporary.unlink(missing_ok=True)
@@ -324,6 +335,10 @@ def migrate_legacy_recording(recording_id: int) -> Path:
     if shutil.disk_usage(destination.parent).free < required_free:
         raise RuntimeError(f"마이그레이션 임시 공간 부족: 필요 {required_free} bytes")
     transcode_h264 = old_version == 2 and video_codec in {"hevc", "h265"}
+    logger.info(
+        "legacy migration started recording=%s version=%s video_codec=%s audio_codec=%s transcode_h264=%s",
+        recording_id, old_version, video_codec, audio_codec, transcode_h264,
+    )
     master = package_media_as_hls(source, destination, audio_source=audio_source, transcode_h264=transcode_h264)
     old_thumbnail = thumbnail_path(source)
     new_thumbnail = thumbnail_path(master)
@@ -346,6 +361,10 @@ def migrate_legacy_recording(recording_id: int) -> Path:
     old_thumbnail.unlink(missing_ok=True)
     legacy_aac.unlink(missing_ok=True)
     audio_asset_path(source, "flac").unlink(missing_ok=True)
+    logger.info(
+        "legacy migration completed recording=%s version=%s path=%s bytes=%s",
+        recording_id, STORAGE_VERSION, master, size,
+    )
     return master
 
 

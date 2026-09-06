@@ -11,12 +11,19 @@ from urllib.parse import urljoin, urlparse
 
 import httpx
 
+from ..config import logger
 from ..db import session
 from ..models import Recording
 from .chzzk import _hls_variant
 from .state import DownloadCancelled, active_captures
 
 URI_ATTRIBUTE = re.compile(r'URI="([^"]+)"')
+
+
+def _safe_url(value: str) -> str:
+    """Keep query signatures/tokens out of logs while retaining diagnostics."""
+    parsed = urlparse(value)
+    return f"{parsed.scheme}://{parsed.netloc}{parsed.path}"
 
 
 @dataclass
@@ -90,6 +97,7 @@ def _snapshot(text: str, playlist_url: str) -> tuple[list[str], list[Segment], b
 
 async def _download(client: httpx.AsyncClient, url: str, destination: Path, byte_range: str | None = None) -> None:
     if destination.is_file() and destination.stat().st_size > 0:
+        logger.debug("hls segment cache hit file=%s bytes=%s", destination.name, destination.stat().st_size)
         return
     headers = {}
     if byte_range:
@@ -105,9 +113,11 @@ async def _download(client: httpx.AsyncClient, url: str, destination: Path, byte
             temporary = destination.with_name(f".{destination.name}.part")
             temporary.write_bytes(response.content)
             temporary.replace(destination)
+            logger.debug("hls segment downloaded file=%s bytes=%s", destination.name, destination.stat().st_size)
             return
         except (httpx.HTTPError, OSError) as exc:
             error = exc
+            logger.warning("hls segment retry file=%s attempt=%s error=%s", destination.name, attempt + 1, type(exc).__name__)
             await asyncio.sleep(0.5 * (attempt + 1))
     raise RuntimeError(f"HLS 조각 다운로드 실패: {type(error).__name__}")
 
@@ -163,6 +173,10 @@ async def mirror_hls(
 ) -> tuple[Path, int, float]:
     """Mirror original init/segment bytes and write a fully local playlist."""
     destination.mkdir(parents=True, exist_ok=True)
+    logger.info(
+        "hls mirror started recording=%s source=%s live=%s concurrency=%s",
+        recording_id, _safe_url(source_url), live, concurrency,
+    )
     client_headers = {"User-Agent": "Mozilla/5.0", "Referer": referer}
     semaphore = asyncio.Semaphore(max(1, min(16, concurrency)))
     captured: dict[int, Segment] = {}
@@ -174,6 +188,10 @@ async def mirror_hls(
             response.raise_for_status()
             variant_url, _ = _hls_variant(response.content, str(response.url))
             playlist_url = variant_url or str(response.url)
+            logger.info(
+                "hls master resolved recording=%s status=%s selected_variant=%s",
+                recording_id, response.status_code, _safe_url(playlist_url),
+            )
             while True:
                 with session():
                     if Recording.get_by_id(recording_id).state == "canceled":
@@ -183,6 +201,14 @@ async def mirror_hls(
                     playlist.raise_for_status()
                     headers, current, ended, target_duration = _snapshot(playlist.text, str(playlist.url))
                     failures = 0
+                    logger.info(
+                        "hls playlist polled recording=%s sequence=%s segments=%s ended=%s target_duration=%.2fs",
+                        recording_id,
+                        current[0].sequence if current else "-",
+                        len(current),
+                        ended,
+                        target_duration,
+                    )
                 except httpx.HTTPError:
                     failures += 1
                     if failures >= 5 and captured:
@@ -218,6 +244,10 @@ async def mirror_hls(
                     Recording.update(size=size, speed_bps=0).where(
                         Recording.id == recording_id, Recording.state == "recording"
                     ).execute()
+                logger.info(
+                    "hls batch stored recording=%s new_segments=%s total_segments=%s bytes=%s",
+                    recording_id, len(missing), len(captured), size,
+                )
                 if max_segments is not None and len(captured) >= max_segments:
                     break
                 if ended or not live:
@@ -228,6 +258,10 @@ async def mirror_hls(
             raise RuntimeError("HLS 재생목록에 미디어 조각이 없습니다")
         _write_playlist(destination, localized_headers, entries, ended=True)
         size = sum(path.stat().st_size for path in destination.iterdir() if path.is_file())
+        logger.info(
+            "hls mirror completed recording=%s segments=%s bytes=%s duration=%.2fs",
+            recording_id, len(entries), size, _duration(entries),
+        )
         return destination / "master.m3u8", size, _duration(entries)
     finally:
         active_captures.discard(recording_id)
