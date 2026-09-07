@@ -91,6 +91,27 @@ def test_thumbnail_retries_with_accurate_seek_when_fast_hls_seek_fails(monkeypat
     assert commands[1].index("-ss") > commands[1].index("-i")
 
 
+def test_thumbnail_falls_back_to_first_frame_for_partial_hls(monkeypatch, tmp_path):
+    bundle = tmp_path / "sample.hls"
+    bundle.mkdir()
+    master = bundle / "master.m3u8"
+    master.write_text("#EXTM3U\n")
+    commands = []
+
+    def fake_run(command, **_kwargs):
+        commands.append(command)
+        return type("Result", (), {"returncode": 1, "stderr": b"segment not ready"})()
+
+    monkeypatch.setattr(media_service, "probe_duration", lambda _path: 120.0)
+    monkeypatch.setattr(media_service.subprocess, "run", fake_run)
+    try:
+        media_service.generate_thumbnail(master)
+    except RuntimeError as exc:
+        assert "segment not ready" in str(exc)
+    assert len(commands) == 3
+    assert "-ss" not in commands[2]
+
+
 def test_radio_aac_redirects_to_audio_only_hls(monkeypatch, tmp_path):
     from app.routers import media as media_router
 

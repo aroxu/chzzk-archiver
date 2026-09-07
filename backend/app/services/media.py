@@ -394,6 +394,14 @@ def generate_thumbnail(media_path: Path) -> Path:
                 "ffmpeg", "-y", "-hide_banner", "-loglevel", "error", *_input_options(media_path),
                 "-i", str(media_path), "-ss", f"{seek:.3f}", "-frames:v", "1", "-vf", "scale=640:-2", "-q:v", "3", str(temporary),
             ],
+            [
+                # A freshly mirrored/live HLS playlist may advertise the full
+                # duration while only its first segment is immediately usable.
+                # Fall back to the first decodable frame instead of returning
+                # 422 when midpoint seeking lands beyond the available data.
+                "ffmpeg", "-y", "-hide_banner", "-loglevel", "error", *_input_options(media_path),
+                "-i", str(media_path), "-frames:v", "1", "-vf", "scale=640:-2", "-q:v", "3", str(temporary),
+            ],
         ]
         last_error = ""
         for command in commands:
