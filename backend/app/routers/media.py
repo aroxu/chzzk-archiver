@@ -8,6 +8,7 @@ from typing import Literal
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import FileResponse, RedirectResponse, StreamingResponse
 
+from ..config import logger
 from ..db import db
 from ..models import User
 from ..security import current_user
@@ -109,6 +110,7 @@ def thumbnail(recording_id: int, user: User = Depends(current_user), _=Depends(d
         try:
             path = generate_thumbnail(Path(rec.path))
         except Exception as exc:
+            logger.exception("thumbnail generation failed recording=%s path=%s", recording_id, rec.path)
             raise HTTPException(422, f"썸네일을 만들 수 없습니다: {str(exc)[-500:]}") from exc
     if not path.exists():
         raise HTTPException(404, "썸네일이 없습니다")

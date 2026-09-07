@@ -384,13 +384,26 @@ def generate_thumbnail(media_path: Path) -> Path:
     temporary = destination.with_name(f".{destination.name}.tmp.jpg")
     destination.parent.mkdir(parents=True, exist_ok=True)
     try:
-        subprocess.run(
+        seek = max(0.0, duration / 2)
+        commands = [
             [
-                "ffmpeg", "-y", "-loglevel", "error", "-ss", f"{max(0.0, duration / 2):.3f}",
+                "ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-ss", f"{seek:.3f}",
                 *_input_options(media_path), "-i", str(media_path), "-frames:v", "1", "-vf", "scale=640:-2", "-q:v", "3", str(temporary),
             ],
-            capture_output=True, check=True,
-        )
+            [
+                "ffmpeg", "-y", "-hide_banner", "-loglevel", "error", *_input_options(media_path),
+                "-i", str(media_path), "-ss", f"{seek:.3f}", "-frames:v", "1", "-vf", "scale=640:-2", "-q:v", "3", str(temporary),
+            ],
+        ]
+        last_error = ""
+        for command in commands:
+            result = subprocess.run(command, capture_output=True, check=False)
+            if result.returncode == 0 and _nonempty(temporary):
+                break
+            last_error = result.stderr.decode(errors="replace").strip()
+            temporary.unlink(missing_ok=True)
+        else:
+            raise RuntimeError(last_error[-1000:] or "ffmpeg did not create a thumbnail")
         if not _nonempty(temporary):
             raise RuntimeError("ffmpeg did not create a thumbnail")
         temporary.replace(destination)

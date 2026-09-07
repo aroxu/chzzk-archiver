@@ -68,6 +68,29 @@ def test_missing_thumbnail_is_generated_lazily(monkeypatch, tmp_path):
     assert calls == [master]
 
 
+def test_thumbnail_retries_with_accurate_seek_when_fast_hls_seek_fails(monkeypatch, tmp_path):
+    bundle = tmp_path / "sample.hls"
+    bundle.mkdir()
+    master = bundle / "master.m3u8"
+    master.write_text("#EXTM3U\n")
+    commands = []
+
+    def fake_run(command, **_kwargs):
+        commands.append(command)
+        if len(commands) == 2:
+            Path(command[-1]).write_bytes(b"jpeg")
+            return type("Result", (), {"returncode": 0, "stderr": b""})()
+        return type("Result", (), {"returncode": 1, "stderr": b"fast seek failed"})()
+
+    monkeypatch.setattr(media_service, "probe_duration", lambda _path: 120.0)
+    monkeypatch.setattr(media_service.subprocess, "run", fake_run)
+    thumbnail = media_service.generate_thumbnail(master)
+
+    assert thumbnail.read_bytes() == b"jpeg"
+    assert commands[0].index("-ss") < commands[0].index("-i")
+    assert commands[1].index("-ss") > commands[1].index("-i")
+
+
 def test_radio_aac_redirects_to_audio_only_hls(monkeypatch, tmp_path):
     from app.routers import media as media_router
 
